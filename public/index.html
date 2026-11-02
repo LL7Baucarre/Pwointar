@@ -53,11 +53,32 @@
         <div class="timer-zone">
           <div class="timer-ring" id="timer-ring">
             <div class="timer-display" id="timer-display">00:00:00</div>
+            <div class="timer-today" id="timer-today">🗂️ Aujourd'hui · 0 min</div>
             <div class="timer-note" id="timer-note">PRÊT À POINTER</div>
           </div>
           <button class="big-btn" id="btn-start">▶ POINTER</button>
           <button class="big-btn stop hidden" id="btn-stop">■ STOP (+XP)</button>
           <div class="timer-task hidden" id="timer-task"></div>
+        </div>
+
+        <div class="card chrono-card">
+          <h3>⏱️ Chronos de tâches <span class="pill" id="chrono-count"></span></h3>
+          <select id="chrono-task" aria-label="Tâche à chronométrer"></select>
+          <div class="btn-row chrono-launch-btns">
+            <button type="button" class="btn ghost" id="btn-chrono-attach">📌 Rattacher</button>
+            <button type="button" class="btn ghost" id="btn-chrono-minuteur">⏱️ Minuteur</button>
+          </div>
+          <button type="button" class="qa chrono-fly-btn" id="btn-chrono-fly">✨ Nouvelle tâche à la volée</button>
+          <form class="fly-row hidden" id="chrono-fly-box">
+            <input type="text" id="chrono-fly-title" placeholder="Nom de la tâche…" maxlength="120">
+            <button type="submit" class="btn">Lancer</button>
+          </form>
+          <p class="chrono-hint" id="chrono-hint"></p>
+          <ul class="task-list chronos" id="chrono-list"></ul>
+          <div id="chrono-done-card" class="hidden">
+            <h4 class="chrono-done-title">Aujourd'hui, terminés</h4>
+            <ul class="task-list chronos" id="chrono-done-list"></ul>
+          </div>
         </div>
 
         <div class="quick-actions">
@@ -154,9 +175,12 @@
             <input type="number" id="set-notify-stop" min="15" step="30"><span>min</span>
             <button type="button" data-target="set-notify-stop" data-step="30">+</button></div>
           </label>
-          <label>Rappel quotidien de pointer
-            <input type="time" id="set-daily-remind">
-          </label>
+          <div class="reminders-block">
+            <h4>⏰ Rappels de pointage</h4>
+            <div id="reminders-list"></div>
+            <button type="button" class="btn ghost" id="btn-reminder-add">＋ Ajouter un rappel</button>
+            <p class="reminders-hint">Un push part à l'heure indiquée si tu ne pointes pas à ce moment-là (8 max).</p>
+          </div>
         </div>
 
         <form class="card form" id="settings-form">

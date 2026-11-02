@@ -55,6 +55,23 @@ CREATE TABLE IF NOT EXISTS push_subs (
   created_at INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS task_chronos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'attached', -- 'attached' = rattaché au gros chrono | 'standalone' = minuteur autonome
+  start_ms INTEGER NOT NULL,
+  active_ms INTEGER NOT NULL DEFAULT 0,  -- temps actif accumulé (hors pauses)
+  running_since INTEGER,                 -- NULL => en pause ou stoppé
+  auto_paused INTEGER NOT NULL DEFAULT 0,-- mis en pause auto quand le gros chrono s'arrête
+  stopped_at INTEGER,
+  date TEXT NOT NULL,
+  entry_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  time TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -77,6 +94,11 @@ if (row.hourly_rate === 0) db.prepare('UPDATE settings SET hourly_rate=25 WHERE 
 const kvGet = (k) => db.prepare('SELECT value FROM kv WHERE key=?').get(k)?.value ?? null;
 const kvSet = (k, v) => db.prepare('INSERT INTO kv (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
 const kvDel = (k) => db.prepare('DELETE FROM kv WHERE key=?').run(k);
+
+// Migration : l'ancien rappel quotidien unique devient une liste de rappels
+db.exec(`INSERT INTO reminders (time, enabled)
+  SELECT s.daily_remind, 1 FROM settings s
+  WHERE s.id = 1 AND s.daily_remind <> '' AND NOT EXISTS (SELECT 1 FROM reminders)`);
 
 function initVapid() {
   let pub = kvGet('vapid_pub'), priv = kvGet('vapid_priv');
@@ -234,6 +256,70 @@ function buildDayStats(limitDays = 14) {
 }
 
 // ---------------------------------------------------------------------------
+// Chronos de tâches (rattachés au gros chrono ou minuteurs autonomes)
+// ---------------------------------------------------------------------------
+const MAX_PARALLEL_CHRONOS = 3;
+
+const sessionOpen = () => db.prepare('SELECT * FROM entries WHERE end_ms IS NULL ORDER BY start_ms DESC LIMIT 1').get() || null;
+const openChronos = () => db.prepare('SELECT * FROM task_chronos WHERE stopped_at IS NULL').all();
+
+function chronoActiveMs(c, now = Date.now()) {
+  return (c.active_ms || 0) + (c.running_since ? Math.max(0, now - c.running_since) : 0);
+}
+function chronoToJson(c) {
+  const t = c.task_id ? db.prepare('SELECT title FROM tasks WHERE id=?').get(c.task_id) : null;
+  return {
+    id: c.id, task_id: c.task_id,
+    task_title: t ? t.title : '(tâche supprimée)',
+    mode: c.mode, start_ms: c.start_ms, date: c.date,
+    active_ms: c.active_ms,
+    running: !!c.running_since, running_since: c.running_since || null,
+    auto_paused: !!c.auto_paused,
+    elapsed_ms: chronoActiveMs(c),
+  };
+}
+function dateFromMs(ms, tzOffset) {
+  if (typeof tzOffset === 'number') return new Date(ms - tzOffset).toISOString().slice(0, 10);
+  return ymd(new Date(ms));
+}
+function createSession(taskId, note, tzOffset) {
+  const start_ms = Date.now();
+  const info = db.prepare('INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes) VALUES (?,?,?,NULL,?,0)')
+    .run(taskId, note, start_ms, dateFromMs(start_ms, tzOffset));
+  return db.prepare('SELECT * FROM entries WHERE id=?').get(info.lastInsertRowid);
+}
+// Quand une (nouvelle) session démarre, on reprend les chronos rattachés auto-pausés
+function resumeAutoPaused() {
+  const rows = db.prepare('SELECT * FROM task_chronos WHERE stopped_at IS NULL AND auto_paused=1 AND running_since IS NULL').all();
+  const now = Date.now();
+  for (const c of rows) db.prepare('UPDATE task_chronos SET running_since=?, auto_paused=0 WHERE id=?').run(now, c.id);
+  return rows.length;
+}
+// Un « temps libre à récupérer » = écoulé depuis la dernière pause où plus rien ne tournait
+function markPauseIfIdle(now) {
+  if (!sessionOpen() && !openChronos().some(c => c.running_since)) kvSet('last_pause_ms', String(now));
+}
+function clearLastPause() { kvSet('last_pause_ms', '0'); }
+function claimableGap(now = Date.now()) {
+  const lp = Number(kvGet('last_pause_ms') || 0);
+  if (!lp || lp >= now) return null;
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  if (lp < midnight.getTime()) return null;
+  if (sessionOpen() || openChronos().some(c => c.running_since)) return null;
+  return lp;
+}
+// Minutes du jour (entrées clôturées + session en cours + minuteurs ouverts) — pour les rappels/pushs
+function dayMinutesFull(dateStr, now = Date.now()) {
+  let m = db.prepare('SELECT COALESCE(SUM(minutes),0) AS m FROM entries WHERE date=? AND end_ms IS NOT NULL').get(dateStr).m;
+  const s = sessionOpen();
+  if (s && s.date === dateStr) m += (now - s.start_ms) / 60000;
+  for (const c of openChronos()) {
+    if (c.mode === 'standalone' && c.date === dateStr) m += chronoActiveMs(c, now) / 60000;
+  }
+  return m;
+}
+
+// ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
 const app = express();
@@ -255,6 +341,16 @@ app.get('/api/bootstrap', (req, res) => {
   const dayStats = buildDayStats(14);
   const weekMinutes = lastDaysSum(7, effectiveToday);
   const monthMinutes = lastDaysSum(30, effectiveToday);
+  const chronos = openChronos().map(chronoToJson);
+  const chronosDone = db.prepare(`
+    SELECT c.id, c.task_id, c.mode, c.active_ms, c.entry_id, c.stopped_at,
+           COALESCE(t.title, '(tâche supprimée)') AS task_title
+    FROM task_chronos c LEFT JOIN tasks t ON t.id = c.task_id
+    WHERE c.stopped_at IS NOT NULL AND c.date = ?
+    ORDER BY c.stopped_at DESC LIMIT 15`).all(effectiveToday)
+    .map(c => ({ ...c, minutes: c.active_ms / 60000 }));
+  const reminders = db.prepare('SELECT * FROM reminders ORDER BY time').all()
+    .map(r => ({ id: r.id, time: r.time, enabled: !!r.enabled }));
   res.json({
     settings, gamification,
     push: { vapid_public: VAPID_PUBLIC, subs: pushSubs().length },
@@ -262,6 +358,10 @@ app.get('/api/bootstrap', (req, res) => {
     today: effTodayMinutes,
     week_minutes: weekMinutes,
     month_minutes: monthMinutes,
+    chronos,
+    chronos_done_today: chronosDone,
+    reminders,
+    fly_origin_ms: claimableGap(),
     tasks, recent, day_stats: dayStats,
   });
 });
@@ -278,14 +378,16 @@ function lastDaysSum(nDays, endDay) {
 
 // --- Pointeuse -------------------------------------------------------------
 app.post('/api/timer/start', (req, res) => {
-  const existing = db.prepare('SELECT * FROM entries WHERE end_ms IS NULL').get();
-  if (existing) return res.status(409).json({ error: 'Une session est déjà en cours' });
+  if (sessionOpen()) return res.status(409).json({ error: 'Une session est déjà en cours' });
+  const runningStandalone = openChronos().find(c => c.mode === 'standalone' && c.running_since);
+  if (runningStandalone) {
+    return res.status(409).json({ error: 'Des minuteurs de tâche tournent — stoppe-les d\'abord (leur temps compte déjà dans la journée)' });
+  }
   const { task_id = null, note = '', tzOffset } = req.body || {};
-  const start_ms = Date.now();
-  const date = typeof tzOffset === 'number' ? new Date(start_ms - tzOffset).toISOString().slice(0, 10) : todayStr();
-  const info = db.prepare('INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes) VALUES (?,?,?,NULL,?,0)').run(task_id, note, start_ms, date);
-  const entry = db.prepare('SELECT * FROM entries WHERE id=?').get(info.lastInsertRowid);
-  res.json({ timer: entryToJson(entry) });
+  const entry = createSession(task_id, note, tzOffset);
+  clearLastPause();
+  const resumed = resumeAutoPaused();
+  res.json({ timer: entryToJson(entry), resumed_chronos: resumed });
 });
 
 app.post('/api/timer/stop', (req, res) => {
@@ -296,6 +398,15 @@ app.post('/api/timer/stop', (req, res) => {
   db.prepare('UPDATE entries SET end_ms=?, minutes=? WHERE id=?').run(end_ms, minutes, entry.id);
   const g = computeGamification();
   kvDel('stop_alert_' + entry.id);
+
+  // Les chronos rattachés passent en pause auto (leur temps vient de la session)
+  const pausedChronos = db.prepare(`
+    SELECT * FROM task_chronos WHERE stopped_at IS NULL AND mode='attached' AND running_since IS NOT NULL`).all();
+  for (const c of pausedChronos) {
+    db.prepare('UPDATE task_chronos SET active_ms=?, running_since=NULL, auto_paused=1 WHERE id=?')
+      .run(c.active_ms + Math.max(0, end_ms - c.running_since), c.id);
+  }
+
   const s = getSettings();
   if (s.notify_enabled) {
     sendPushAll('⏹️ Session validée !',
@@ -303,13 +414,129 @@ app.post('/api/timer/stop', (req, res) => {
       .catch(() => {});
   }
 
-  // XP gagné pour cette session (les minutes viennent d'être créditées)
-  const taskBonus = entry.task_id ? 0 : 0; // le bonus tâche est versé à la complétion
   res.json({
     entry: entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(entry.id)),
     gained_xp: Math.round(minutes) * XP_PER_MINUTE,
     gamification: g,
+    paused_chronos: pausedChronos.length,
   });
+});
+
+// --- Chronos de tâches -------------------------------------------------------
+app.post('/api/chronos', (req, res) => {
+  const { task_id, mode = 'standalone', tzOffset } = req.body || {};
+  const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(Number(task_id) || -1);
+  if (!task) return res.status(400).json({ error: 'Tâche introuvable' });
+  if (mode !== 'attached' && mode !== 'standalone') return res.status(400).json({ error: 'Mode de chrono invalide' });
+  if (openChronos().length >= MAX_PARALLEL_CHRONOS) {
+    return res.status(409).json({ error: `Max ${MAX_PARALLEL_CHRONOS} chronos en parallèle — stoppe-en un` });
+  }
+  let session_started = false;
+  if (mode === 'attached') {
+    // Rattaché au gros chrono : s'il ne tourne pas, on le lance
+    if (!sessionOpen()) { createSession(null, '', tzOffset); session_started = true; }
+  } else if (sessionOpen()) {
+    return res.status(409).json({ error: 'Le gros chrono tourne : rattache la tâche (📌) au lieu d\'un minuteur' });
+  }
+  const now = Date.now();
+  const cInfo = db.prepare(`INSERT INTO task_chronos (task_id, mode, start_ms, active_ms, running_since, auto_paused, date)
+    VALUES (?,?,?,0,?,0,?)`).run(task.id, mode, now, now, dateFromMs(now, tzOffset));
+  clearLastPause();
+  const resumed = session_started ? resumeAutoPaused() : 0;
+  res.json({
+    chrono: chronoToJson(db.prepare('SELECT * FROM task_chronos WHERE id=?').get(cInfo.lastInsertRowid)),
+    session_started, resumed_chronos: resumed,
+  });
+});
+
+// Création de tâche à la volée : la tâche est créée et son chrono démarre aussitôt.
+// Si du temps s'est écoulé depuis la dernière pause (plus rien ne tournait), le chrono
+// le prend en compte : il démarre à la dernière pause au lieu de maintenant.
+app.post('/api/chronos/fly', (req, res) => {
+  const { title, tzOffset } = req.body || {};
+  if (!title || !String(title).trim()) return res.status(400).json({ error: 'titre requis' });
+  if (openChronos().length >= MAX_PARALLEL_CHRONOS) {
+    return res.status(409).json({ error: `Max ${MAX_PARALLEL_CHRONOS} chronos en parallèle — stoppe-en un` });
+  }
+  const mode = sessionOpen() ? 'attached' : 'standalone';
+  const origin = claimableGap();
+  const tInfo = db.prepare('INSERT INTO tasks (title, xp_bonus, created_at) VALUES (?,?,?)')
+    .run(String(title).trim().slice(0, 120), 25, Date.now());
+  const taskId = tInfo.lastInsertRowid;
+  const start_at = origin ?? Date.now();
+  const cInfo = db.prepare(`INSERT INTO task_chronos (task_id, mode, start_ms, active_ms, running_since, auto_paused, date)
+    VALUES (?,?,?,0,?,0,?)`).run(taskId, mode, start_at, start_at, dateFromMs(start_at, tzOffset));
+  clearLastPause();
+  res.json({
+    task: taskToJson(db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId)),
+    chrono: chronoToJson(db.prepare('SELECT * FROM task_chronos WHERE id=?').get(cInfo.lastInsertRowid)),
+    mode, backfilled: !!origin, origin_ms: start_at,
+  });
+});
+
+function getChronoOr404(id, res) {
+  const c = db.prepare('SELECT * FROM task_chronos WHERE id=?').get(id);
+  if (!c || c.stopped_at) { res.status(404).json({ error: 'Chrono introuvable (ou déjà stoppé)' }); return null; }
+  return c;
+}
+
+app.post('/api/chronos/:id/pause', (req, res) => {
+  const c = getChronoOr404(req.params.id, res); if (!c) return;
+  if (!c.running_since) return res.status(409).json({ error: 'Chrono déjà en pause' });
+  const now = Date.now();
+  db.prepare('UPDATE task_chronos SET active_ms=?, running_since=NULL WHERE id=?')
+    .run(c.active_ms + Math.max(0, now - c.running_since), c.id);
+  markPauseIfIdle(now);
+  res.json({ chrono: chronoToJson(db.prepare('SELECT * FROM task_chronos WHERE id=?').get(c.id)) });
+});
+
+app.post('/api/chronos/:id/resume', (req, res) => {
+  const c = getChronoOr404(req.params.id, res); if (!c) return;
+  if (c.running_since) return res.status(409).json({ error: 'Chrono déjà lancé' });
+  if (c.mode === 'standalone' && sessionOpen()) {
+    return res.status(409).json({ error: 'Le gros chrono tourne : impossible de reprendre un minuteur (double comptage)' });
+  }
+  let session_started = false;
+  if (c.mode === 'attached' && !sessionOpen()) {
+    createSession(null, '', (req.body || {}).tzOffset);
+    session_started = true;
+  }
+  const now = Date.now();
+  db.prepare('UPDATE task_chronos SET running_since=?, auto_paused=0 WHERE id=?').run(now, c.id);
+  clearLastPause();
+  res.json({ chrono: chronoToJson(db.prepare('SELECT * FROM task_chronos WHERE id=?').get(c.id)), session_started });
+});
+
+app.post('/api/chronos/:id/stop', (req, res) => {
+  const c = getChronoOr404(req.params.id, res); if (!c) return;
+  const now = Date.now();
+  const finalActive = chronoActiveMs(c, now);
+  let entry_id = null, entry = null, gained_xp = 0, gamification = null;
+  if (c.mode === 'standalone') {
+    // Un minuteur autonome crée un vrai pointage (compte dans le jour, l'XP et l'argent)
+    const minutes = Math.max(0.1, finalActive / 60000);
+    const info = db.prepare('INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes) VALUES (?,?,?,?,?,?)')
+      .run(c.task_id, '', c.start_ms, now, c.date, minutes);
+    entry_id = info.lastInsertRowid;
+    entry = entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(entry_id));
+    gained_xp = Math.round(minutes) * XP_PER_MINUTE;
+    gamification = computeGamification();
+  }
+  db.prepare('UPDATE task_chronos SET active_ms=?, running_since=NULL, auto_paused=0, stopped_at=?, entry_id=? WHERE id=?')
+    .run(finalActive, now, entry_id, c.id);
+  res.json({
+    chrono: chronoToJson(db.prepare('SELECT * FROM task_chronos WHERE id=?').get(c.id)),
+    entry, gained_xp, gamification,
+  });
+});
+
+app.delete('/api/chronos/:id', (req, res) => {
+  const c = db.prepare('SELECT * FROM task_chronos WHERE id=?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Chrono introuvable' });
+  if (!c.stopped_at) return res.status(409).json({ error: 'Stoppe le chrono avant de le supprimer' });
+  if (c.entry_id) db.prepare('DELETE FROM entries WHERE id=?').run(c.entry_id);
+  db.prepare('DELETE FROM task_chronos WHERE id=?').run(c.id);
+  res.json({ ok: true, gamification: computeGamification() });
 });
 
 // --- Entrées manuelles / édition -------------------------------------------
@@ -391,6 +618,34 @@ app.delete('/api/tasks/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Rappels de pointage (multiples) ----------------------------------------
+const MAX_REMINDERS = 8;
+
+app.post('/api/reminders', (req, res) => {
+  const time = String((req.body || {}).time || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: 'Heure invalide (HH:MM)' });
+  if (db.prepare('SELECT COUNT(*) AS c FROM reminders').get().c >= MAX_REMINDERS) {
+    return res.status(409).json({ error: `${MAX_REMINDERS} rappels maximum` });
+  }
+  const info = db.prepare('INSERT INTO reminders (time, enabled) VALUES (?,1)').run(time);
+  res.json({ reminder: db.prepare('SELECT * FROM reminders WHERE id=?').get(info.lastInsertRowid) });
+});
+
+app.put('/api/reminders/:id', (req, res) => {
+  const r = db.prepare('SELECT * FROM reminders WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Rappel introuvable' });
+  const time = req.body?.time !== undefined ? String(req.body.time).trim() : r.time;
+  if (!/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: 'Heure invalide (HH:MM)' });
+  const enabled = req.body?.enabled !== undefined ? (req.body.enabled ? 1 : 0) : r.enabled;
+  db.prepare('UPDATE reminders SET time=?, enabled=? WHERE id=?').run(time, enabled, r.id);
+  res.json({ reminder: db.prepare('SELECT * FROM reminders WHERE id=?').get(r.id) });
+});
+
+app.delete('/api/reminders/:id', (req, res) => {
+  db.prepare('DELETE FROM reminders WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // --- Réglages ---------------------------------------------------------------
 app.put('/api/settings', (req, res) => {
   const { hourly_rate, currency, daily_goal_minutes, active_day_minutes, notify_enabled, notify_stop_minutes, daily_remind } = req.body || {};
@@ -422,9 +677,15 @@ app.get('/api/stats', (req, res) => {
     SELECT CAST(strftime('%H', start_ms/1000, 'unixepoch') AS INTEGER) AS h, SUM(minutes) AS m
     FROM entries WHERE end_ms IS NOT NULL GROUP BY h ORDER BY h`).all();
   const byTask = db.prepare(`
-    SELECT COALESCE(t.title, '(sans tâche)') AS label, SUM(e.minutes) AS m
-    FROM entries e LEFT JOIN tasks t ON t.id = e.task_id
-    WHERE e.end_ms IS NOT NULL GROUP BY e.task_id ORDER BY m DESC LIMIT 10`).all();
+    SELECT label, SUM(m) AS m FROM (
+      SELECT COALESCE(t.title, '(sans tâche)') AS label, e.minutes AS m
+      FROM entries e LEFT JOIN tasks t ON t.id = e.task_id
+      WHERE e.end_ms IS NOT NULL
+      UNION ALL
+      SELECT COALESCE(t2.title, '(tâche supprimée)') AS label, c.active_ms / 60000.0 AS m
+      FROM task_chronos c LEFT JOIN tasks t2 ON t2.id = c.task_id
+      WHERE c.mode = 'attached'
+    ) GROUP BY label ORDER BY m DESC LIMIT 10`).all();
   const total = db.prepare('SELECT COALESCE(SUM(minutes),0) AS m, COUNT(*) AS c FROM entries WHERE end_ms IS NOT NULL').get();
   res.json({ day_stats: days, by_hour: byHour, by_task: byTask, total });
 });
@@ -498,34 +759,37 @@ async function checkReminders() {
     const s = getSettings();
     const now = new Date();
     const today = todayStr();
-    const open = db.prepare('SELECT * FROM entries WHERE end_ms IS NULL ORDER BY start_ms DESC LIMIT 1').get();
+    const nowMs = Date.now();
+    const open = sessionOpen();
+    const doneToday = dayMinutesFull(today, nowMs);
 
     // 1) Session ouverte depuis longtemps → rappel de stop
-    if (open) {
-      const alreadyDone = db.prepare('SELECT COALESCE(SUM(minutes),0) AS m FROM entries WHERE date=? AND end_ms IS NOT NULL').get(today).m;
-      const running = (Date.now() - open.start_ms) / 60000;
-      if (running >= s.notify_stop_minutes && !kvGet('stop_alert_' + open.id)) {
-        await notifyIfEnabled('⏰ Pense à stopper !',
-          `Ça fait déjà ${fmtMinutesFr(running)} sur cette session. Stoppez pour valider ton XP !`, 'stop-remind');
-        kvSet('stop_alert_' + open.id, '1');
-      }
-      // 2) Objectif du jour atteint pendant la session
-      if (alreadyDone + running >= s.daily_goal_minutes && !kvGet('goal_alert_' + today)) {
-        await notifyIfEnabled('🎯 Objectif du jour atteint !',
-          `Bravo, tu as pointé ${fmtMinutesFr(alreadyDone + running)} aujourd'hui. La suite est du bonus !`, 'goal');
-        kvSet('goal_alert_' + today, '1');
-      }
+    if (open && (nowMs - open.start_ms) / 60000 >= s.notify_stop_minutes && !kvGet('stop_alert_' + open.id)) {
+      await notifyIfEnabled('⏰ Pense à stopper !',
+        `Ça fait déjà ${fmtMinutesFr((nowMs - open.start_ms) / 60000)} sur cette session. Stoppe pour valider ton XP !`, 'stop-remind');
+      kvSet('stop_alert_' + open.id, '1');
+    }
+    // 2) Objectif du jour atteint
+    if (s.daily_goal_minutes > 0 && doneToday >= s.daily_goal_minutes && !kvGet('goal_alert_' + today)) {
+      await notifyIfEnabled('🎯 Objectif du jour atteint !',
+        `Bravo, tu as pointé ${fmtMinutesFr(doneToday)} aujourd'hui. La suite est du bonus !`, 'goal');
+      kvSet('goal_alert_' + today, '1');
     }
 
-    // 3) Rappel quotidien de pointer (fenêtre : heure configurée + 30 min)
-    if (s.daily_remind && /^\d{2}:\d{2}$/.test(s.daily_remind)) {
-      const [hh, mm] = s.daily_remind.split(':').map(Number);
+    // 3) Rappels de pointage multiples : pendant la fenêtre du rappel (±30 min),
+    //    si rien ne tourne (ni gros chrono ni chrono de tâche), on envoie le push
+    const pointing = !!open || openChronos().some(c => c.running_since);
+    if (!pointing) {
       const cur = now.getHours() * 60 + now.getMinutes();
-      const target = hh * 60 + mm;
-      const noSessionYet = db.prepare('SELECT COUNT(*) AS c FROM entries WHERE date=?').get(today).c === 0;
-      if (cur >= target && cur < target + 30 && noSessionYet && !kvGet('daily_alert_' + today)) {
-        await notifyIfEnabled('⏰ N\'oublie pas de pointer !', 'Ta journée commence — lance la pointeuse pour empiler l\'XP 💪', 'daily');
-        kvSet('daily_alert_' + today, '1');
+      for (const r of db.prepare('SELECT * FROM reminders WHERE enabled=1').all()) {
+        if (!/^\d{2}:\d{2}$/.test(r.time || '')) continue;
+        const [hh, mm] = r.time.split(':').map(Number);
+        const target = hh * 60 + mm;
+        if (cur >= target && cur < target + 30 && !kvGet(`remind_alert_${r.id}_${today}`)) {
+          await notifyIfEnabled('⏰ N\'oublie pas de pointer !',
+            `Rappel de ${r.time} — lance la pointeuse (ou un chrono de tâche) pour empiler l'XP 💪`, 'remind-' + r.id);
+          kvSet(`remind_alert_${r.id}_${today}`, '1');
+        }
       }
     }
   } catch (err) {

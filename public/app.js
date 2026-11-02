@@ -4,7 +4,8 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   S: null,               // bootstrap
-  timer: null,           // session ouverte
+  timer: null,           // session ouverte (gros chrono)
+  chronos: [],           // chronos de tâches actifs
   lastTick: 0,
 };
 
@@ -35,6 +36,10 @@ function fmtTime(ms) {
   return new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 }
 function todayLocal() { return new Date(Date.now() - tzOffsetMs).toISOString().slice(0, 10); }
+function chronoElapsedMs(c) {
+  // temps actif accumulé + temps écoulé depuis la dernière reprise
+  return (c.active_ms || 0) + (c.running ? Math.max(0, Date.now() - c.running_since) : 0);
+}
 
 async function api(path, opts = {}) {
   const res = await fetch('/api' + path, {
@@ -112,13 +117,16 @@ function gamifyDiff(g) {
 // ---------------------------------------------------------------------------
 function renderAll(S) {
   renderHud(S);
-  renderTimerUI();
   renderGoal(S);
+  renderTimerUI();
+  renderChronos(S);
   renderRecent(S.recent);
   renderTasks(S.tasks);
   renderStats(S);
   renderSettings(S.settings, S.gamification);
+  renderReminders(S.reminders);
   fillManualTaskSelect(S.tasks);
+  fillChronoTaskSelect(S.tasks);
   renderEntries(S);
 }
 
@@ -149,10 +157,39 @@ function renderTimerUI() {
   tick();
 }
 
+// Total du jour « live » : entrées clôturées + session en cours + minuteurs ouverts
+function todayLiveMinutes() {
+  if (!state.S) return 0;
+  let today = state.S.today;
+  if (state.timer) today += (Date.now() - state.timer.start_ms) / 60000;
+  for (const c of state.chronos) {
+    if (c.mode === 'standalone') today += chronoElapsedMs(c) / 60000;
+  }
+  return today;
+}
+
 function tick() {
-  if (!state.timer) return;
-  const ms = Date.now() - state.timer.start_ms;
-  $('timer-display').textContent = fmtClock(ms);
+  if (state.timer) {
+    $('timer-display').textContent = fmtClock(Date.now() - state.timer.start_ms);
+  }
+  const today = todayLiveMinutes();
+  const todayEl = $('timer-today');
+  if (todayEl) todayEl.textContent = `🗂️ Aujourd'hui · ${fmtDuration(today)}`;
+  // objectif du jour + tuile stats en direct
+  if (state.S) {
+    const goal = state.S.settings.daily_goal_minutes;
+    $('goal-done').textContent = today >= 60 ? fmtDuration(today) : `${Math.round(today)} min`;
+    $('goal-earned').textContent = fmtMoney(today / 60 * state.S.settings.hourly_rate, state.S.settings.currency);
+    $('goal-fill').style.width = Math.min(100, goal > 0 ? (today / goal) * 100 : 0) + '%';
+    $('stat-today').textContent = fmtDuration(today);
+  }
+  // horloges des chronos actifs
+  for (const c of state.chronos) {
+    const t1 = $('chrono-time-' + c.id);
+    if (t1) t1.textContent = fmtClock(chronoElapsedMs(c));
+    const t2 = $('task-chrono-time-' + c.id);
+    if (t2) t2.textContent = fmtClock(chronoElapsedMs(c));
+  }
 }
 
 setInterval(tick, 1000);
@@ -215,6 +252,8 @@ function renderTasks(tasks) {
   const row = (t) => {
     const li = document.createElement('li');
     li.id = 'task-' + t.id;
+    const chrono = state.chronos.find(c => c.task_id === t.id);
+    if (chrono) li.classList.add('has-chrono');
     const check = document.createElement('button');
     check.className = 'task-check' + (t.done ? ' on' : '');
     check.textContent = '✓';
@@ -222,7 +261,7 @@ function renderTasks(tasks) {
     const main = document.createElement('div');
     main.className = 't-main';
     main.innerHTML = `<div class="t-title">${esc(t.title)}</div>
-      <div class="t-meta">${t.est_minutes ? '~' + fmtDuration(t.est_minutes) + ' · ' : ''}<span class="t-xp">+${t.xp_bonus} XP</span></div>`;
+      <div class="t-meta">${t.est_minutes ? '~' + fmtDuration(t.est_minutes) + ' · ' : ''}<span class="t-xp">+${t.xp_bonus} XP</span>${chrono ? ` · ⏱️ <span class="t-live" id="task-chrono-time-${chrono.id}">${fmtClock(chronoElapsedMs(chrono))}</span>` : ''}</div>`;
     const del = document.createElement('button');
     del.className = 'icon-btn'; del.textContent = '🗑️';
     del.onclick = async () => {
@@ -231,6 +270,14 @@ function renderTasks(tasks) {
       catch (err) { toast('❌ ' + err.message); }
     };
     li.append(check, main, del);
+    if (!t.done) {
+      const play = document.createElement('button');
+      play.className = 'icon-btn play-btn';
+      play.textContent = '▶️';
+      play.title = 'Lancer un chrono (📌 rattaché si le gros chrono tourne, sinon ⏱️ minuteur)';
+      play.onclick = () => launchFromTask(t);
+      li.insertBefore(play, del);
+    }
     return li;
   };
 
@@ -326,7 +373,6 @@ function renderSettings(settings, g) {
   $('set-goal').value = settings.daily_goal_minutes;
   $('set-active').value = settings.active_day_minutes;
   $('set-notify-stop').value = settings.notify_stop_minutes;
-  $('set-daily-remind').value = settings.daily_remind || '';
   $('set-notify-enabled').checked = !!settings.notify_enabled;
   $('set-currency-label').textContent = currencySymbol(settings.currency);
   const xpToNext = g.next_level_xp - g.xp_total;
@@ -387,6 +433,7 @@ async function startTimer(taskId = null) {
     } else {
       toast('▶️ C\'est parti ! Empile l\'XP 💪');
     }
+    if (r.resumed_chronos) toast(`⏱️ ${r.resumed_chronos} chrono(s) rattaché(s) repris`);
     lastLevel = state.S.gamification.level;
     await refresh();
   } catch (err) { toast('⚠️ ' + err.message); }
@@ -401,6 +448,7 @@ async function stopTimer() {
     toast(`⏹️ Session de ${fmtDuration(r.entry.minutes)} — +${r.gained_xp} XP, ${fmtMoney(money, state.S.settings.currency)} 💰`, 'gold');
     if (r.entry.minutes >= 240) confetti(50);
     else confetti(15);
+    if (r.paused_chronos) toast(`⏸ ${r.paused_chronos} chrono(s) rattaché(s) en pause — relance le gros chrono pour les reprendre`);
     gamifyDiff(r.gamification);
     await refresh();
   } catch (err) { toast('⚠️ ' + err.message); }
@@ -417,6 +465,184 @@ $('qa-manual').onclick = () => {
   switchTab('profile');
   setTimeout(() => $('manual-date').scrollIntoView({ behavior: 'smooth', block: 'center' }), 150);
 };
+
+// ---------------------------------------------------------------------------
+// Chronos de tâches (max 3 en parallèle)
+// mode 'attached'   : le temps vient du gros chrono (auto-pausé si la session s'arrête)
+// mode 'standalone' : minuteur autonome — crée un pointage à l'arrêt
+// ---------------------------------------------------------------------------
+async function startChrono(taskId, mode) {
+  try {
+    const r = await api('/chronos', { method: 'POST', body: { task_id: taskId, mode, tzOffset: tzOffsetMs } });
+    if (r.session_started) toast('▶️ Gros chrono lancé automatiquement');
+    if (r.resumed_chronos) toast(`⏱️ ${r.resumed_chronos} chrono(s) rattaché(s) repris`);
+    toast(r.chrono.mode === 'attached'
+      ? `📌 « ${r.chrono.task_title} » rattaché au gros chrono`
+      : `⏱️ « ${r.chrono.task_title} » lancée en minuteur`);
+    await refresh();
+  } catch (err) { toast('⚠️ ' + err.message); }
+}
+
+// Lancement rapide depuis la liste des tâches : rattaché si le gros chrono tourne, sinon minuteur
+async function launchFromTask(t) {
+  await startChrono(t.id, state.timer ? 'attached' : 'standalone');
+}
+
+async function chronoPause(c) {
+  try { await api(`/chronos/${c.id}/pause`, { method: 'POST' }); await refresh(); }
+  catch (err) { toast('⚠️ ' + err.message); }
+}
+
+async function chronoResume(c) {
+  try {
+    const r = await api(`/chronos/${c.id}/resume`, { method: 'POST', body: { tzOffset: tzOffsetMs } });
+    if (r.session_started) toast('▶️ Gros chrono relancé automatiquement');
+    await refresh();
+  } catch (err) { toast('⚠️ ' + err.message); }
+}
+
+async function chronoStop(c) {
+  try {
+    const r = await api(`/chronos/${c.id}/stop`, { method: 'POST' });
+    if (r.entry) {
+      toast(`⏹️ « ${r.chrono.task_title} » : ${fmtDuration(r.entry.minutes)} — +${r.gained_xp} XP 💰`, 'gold');
+      if (r.gamification) gamifyDiff(r.gamification);
+      confetti(15);
+    } else {
+      toast(`⏹️ « ${r.chrono.task_title} » — ${fmtDuration(r.chrono.elapsed_ms / 60000)} rattachées ✅`);
+    }
+    await refresh();
+  } catch (err) { toast('⚠️ ' + err.message); }
+}
+
+async function chronoDelete(c) {
+  if (!confirm('Supprimer ce chrono terminé ?')) return;
+  try { await api(`/chronos/${c.id}`, { method: 'DELETE' }); toast('Chrono supprimé'); await refresh(); }
+  catch (err) { toast('⚠️ ' + err.message); }
+}
+
+function renderChronos(S) {
+  state.chronos = S.chronos || [];
+  const list = $('chrono-list');
+  list.innerHTML = '';
+  if (!state.chronos.length) {
+    list.innerHTML = '<li class="empty">Aucun chrono actif — choisis une tâche ci-dessus ⏱️</li>';
+  } else {
+    for (const c of state.chronos) {
+      const trulyRunning = c.running && (c.mode === 'standalone' || !!state.timer);
+      const li = document.createElement('li');
+      li.className = 'chrono-row ' + (trulyRunning ? 'running' : 'paused');
+      const badge = c.mode === 'attached'
+        ? '<span class="c-badge attached">📌 rattaché</span>'
+        : '<span class="c-badge standalone">⏱️ minuteur</span>';
+      li.innerHTML = `
+        <div class="c-main">
+          <div class="c-title">${esc(c.task_title)}</div>
+          <div class="c-badges">${badge}${c.auto_paused ? '<span class="c-badge auto">⏸ auto</span>' : ''}</div>
+        </div>
+        <span class="c-time" id="chrono-time-${c.id}">${fmtClock(chronoElapsedMs(c))}</span>`;
+      const pauseBtn = document.createElement('button');
+      pauseBtn.className = 'icon-btn';
+      pauseBtn.textContent = c.running ? '⏸' : '▶';
+      pauseBtn.title = c.running ? 'Mettre en pause' : 'Reprendre';
+      pauseBtn.onclick = () => (c.running ? chronoPause(c) : chronoResume(c));
+      const stopBtn = document.createElement('button');
+      stopBtn.className = 'icon-btn stop-chrono';
+      stopBtn.textContent = '■';
+      stopBtn.title = 'Stopper et valider';
+      stopBtn.onclick = () => chronoStop(c);
+      li.append(pauseBtn, stopBtn);
+      list.appendChild(li);
+    }
+  }
+
+  // chronos terminés aujourd'hui
+  const doneArr = S.chronos_done_today || [];
+  $('chrono-done-card').classList.toggle('hidden', !doneArr.length);
+  const done = $('chrono-done-list');
+  done.innerHTML = '';
+  doneArr.forEach(c => {
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <div class="c-main">
+        <div class="c-title">${esc(c.task_title)}</div>
+        <div class="c-badges">${c.mode === 'attached'
+          ? '<span class="c-badge attached">📌 rattaché</span>'
+          : '<span class="c-badge standalone">⏱️ minuteur</span>'}</div>
+      </div>
+      <span class="c-time">${fmtDuration(c.minutes)}</span>`;
+    const del = document.createElement('button');
+    del.className = 'icon-btn';
+    del.textContent = '🗑️';
+    del.title = 'Supprimer';
+    del.onclick = () => chronoDelete(c);
+    li.append(del);
+    done.appendChild(li);
+  });
+
+  updateChronoLaunchUI();
+}
+
+function updateChronoLaunchUI() {
+  if (!state.S) return;
+  const sessionRunning = !!state.timer;
+  const full = state.chronos.length >= 3;
+  const noTasks = !state.S.tasks.some(t => !t.done);
+  $('btn-chrono-attach').disabled = full || noTasks;
+  $('btn-chrono-minuteur').disabled = full || noTasks || sessionRunning;
+  $('chrono-task').disabled = noTasks;
+  $('btn-chrono-fly').disabled = full;
+  const hint = $('chrono-hint');
+  if (full) hint.textContent = '⚠️ 3 chronos max en parallèle — stoppe-en un d\'abord.';
+  else if (noTasks) hint.textContent = 'Ajoute une tâche (onglet 📋) ou crée-la à la volée ✨.';
+  else if (sessionRunning) hint.textContent = 'Gros chrono en cours → les nouvelles tâches seront 📌 rattachées (le temps vient de la session).';
+  else hint.textContent = '⏱️ Minuteur = autonome, son temps compte dans la journée. 📌 Rattacher = démarre le gros chrono et le temps vient de la session.';
+  if (state.S.fly_origin_ms && !full && !noTasks) {
+    hint.textContent += ` ✨ À la volée : comptera depuis ${fmtTime(state.S.fly_origin_ms)}.`;
+  }
+}
+
+function fillChronoTaskSelect(tasks) {
+  const sel = $('chrono-task');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— choisir une tâche —</option>';
+  tasks.filter(t => !t.done).forEach(t => {
+    const o = document.createElement('option');
+    o.value = t.id; o.textContent = t.title;
+    sel.appendChild(o);
+  });
+  sel.value = cur;
+}
+
+$('btn-chrono-attach').onclick = () => {
+  const sel = $('chrono-task');
+  if (!sel.value) { toast('⚠️ Choisis une tâche'); return; }
+  startChrono(Number(sel.value), 'attached');
+};
+$('btn-chrono-minuteur').onclick = () => {
+  const sel = $('chrono-task');
+  if (!sel.value) { toast('⚠️ Choisis une tâche'); return; }
+  startChrono(Number(sel.value), 'standalone');
+};
+$('btn-chrono-fly').onclick = () => {
+  const box = $('chrono-fly-box');
+  box.classList.toggle('hidden');
+  if (!box.classList.contains('hidden')) $('chrono-fly-title').focus();
+};
+$('chrono-fly-box').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const title = $('chrono-fly-title').value.trim();
+  if (!title) { toast('⚠️ Donne un nom à la tâche'); return; }
+  try {
+    const r = await api('/chronos/fly', { method: 'POST', body: { title, tzOffset: tzOffsetMs } });
+    $('chrono-fly-title').value = '';
+    $('chrono-fly-box').classList.add('hidden');
+    toast(r.backfilled
+      ? `✨ « ${r.task.title} » créée — comptée dès ${fmtTime(r.origin_ms)}`
+      : `✨ « ${r.task.title} » créée — chrono ${r.mode === 'attached' ? 'rattaché 📌' : 'lancé ⏱️'}`);
+    await refresh();
+  } catch (err) { toast('⚠️ ' + err.message); }
+});
 
 // ---------------------------------------------------------------------------
 // Tabs
@@ -485,7 +711,6 @@ $('settings-form').onsubmit = async (e) => {
         daily_goal_minutes: +$('set-goal').value,
         active_day_minutes: Math.max(1, +$('set-active').value),
         notify_stop_minutes: Math.max(15, +$('set-notify-stop').value || 240),
-        daily_remind: $('set-daily-remind').value || '',
         notify_enabled: $('set-notify-enabled').checked,
       },
     });
@@ -496,6 +721,55 @@ $('settings-form').onsubmit = async (e) => {
 };
 
 $('set-currency').onchange = () => $('set-currency-label').textContent = currencySymbol($('set-currency').value);
+
+// ---------------------------------------------------------------------------
+// Rappels de pointage multiples
+// ---------------------------------------------------------------------------
+function renderReminders(reminders) {
+  const el = $('reminders-list');
+  if (!el) return;
+  el.innerHTML = '';
+  const list = reminders || [];
+  list.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'reminder-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!r.enabled;
+    cb.title = r.enabled ? 'Rappel activé' : 'Rappel désactivé';
+    cb.onchange = async () => {
+      try { await api(`/reminders/${r.id}`, { method: 'PUT', body: { enabled: cb.checked } }); await refresh(); }
+      catch (err) { toast('⚠️ ' + err.message); }
+    };
+    const time = document.createElement('input');
+    time.type = 'time';
+    time.value = r.time;
+    time.onchange = async () => {
+      try { await api(`/reminders/${r.id}`, { method: 'PUT', body: { time: time.value } }); toast('⏰ Rappel mis à jour'); await refresh(); }
+      catch (err) { toast('⚠️ ' + err.message); }
+    };
+    const del = document.createElement('button');
+    del.className = 'icon-btn';
+    del.textContent = '🗑️';
+    del.title = 'Supprimer le rappel';
+    del.onclick = async () => {
+      try { await api(`/reminders/${r.id}`, { method: 'DELETE' }); toast('⏰ Rappel supprimé'); await refresh(); }
+      catch (err) { toast('⚠️ ' + err.message); }
+    };
+    row.append(cb, time, del);
+    el.appendChild(row);
+  });
+  if (!list.length) el.innerHTML = '<div class="empty">Aucun rappel — ajoute-en un !</div>';
+  $('btn-reminder-add').disabled = list.length >= 8;
+}
+
+$('btn-reminder-add').onclick = async () => {
+  try {
+    await api('/reminders', { method: 'POST', body: { time: '09:00' } });
+    toast('⏰ Rappel ajouté');
+    await refresh();
+  } catch (err) { toast('⚠️ ' + err.message); }
+};
 
 // ---------------------------------------------------------------------------
 // Notifications push

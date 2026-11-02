@@ -333,3 +333,72 @@ main { padding: 16px; }
   animation: floatup 1.2s ease-out forwards;
 }
 @keyframes floatup { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-70px); opacity: 0; } }
+
+/* ============ Total du jour dans l'anneau ============ */
+.timer-today {
+  font-size: 12px; font-weight: 800; letter-spacing: .5px;
+  color: var(--accent); font-variant-numeric: tabular-nums;
+}
+
+/* ============ Chronos de tâches ============ */
+.chrono-card select {
+  width: 100%; margin-bottom: 8px; padding: 10px 12px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); font-size: 14px;
+}
+.chrono-card select:disabled { opacity: .5; }
+.btn:disabled, .qa:disabled { opacity: .45; cursor: not-allowed; }
+.chrono-launch-btns { margin-bottom: 8px; }
+.chrono-launch-btns .btn { flex: 1; padding: 10px; font-size: 13px; }
+.chrono-fly-btn { width: 100%; margin-bottom: 8px; }
+.fly-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.fly-row input {
+  flex: 1; min-width: 0; padding: 10px 12px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); font-size: 14px;
+}
+.fly-row .btn { width: auto; padding: 10px 16px; }
+.chrono-hint { font-size: 11px; color: var(--muted); margin: 0 0 6px; }
+.task-list.chronos li { padding: 10px 2px; }
+.chrono-row .c-main { flex: 1; min-width: 0; }
+.chrono-row .c-title { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.c-badges { margin-top: 2px; }
+.c-badge {
+  display: inline-block; font-size: 10px; font-weight: 800; border-radius: 999px;
+  padding: 1px 8px; margin-right: 4px;
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+}
+.c-badge.attached { color: var(--primary2); }
+.c-badge.standalone { color: var(--accent); }
+.c-badge.auto { color: var(--gold); }
+.chrono-row .c-time, .chrono-done-list .c-time {
+  font-variant-numeric: tabular-nums; font-weight: 900; font-size: 15px;
+  white-space: nowrap;
+}
+.chrono-row.running .c-time { color: var(--primary2); }
+.chrono-row.paused { opacity: .6; }
+.icon-btn.stop-chrono:hover { color: var(--danger); }
+.icon-btn.play-btn:hover { color: var(--primary2); }
+.task-list li.has-chrono .t-live {
+  color: var(--primary2); font-weight: 800; font-variant-numeric: tabular-nums;
+}
+#chrono-done-card { margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.chrono-done-title {
+  margin: 0 0 4px; font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .5px; font-weight: 800;
+}
+
+/* ============ Rappels de pointage multiples ============ */
+.reminders-block { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.reminders-block h4 {
+  margin: 0 0 8px; font-size: 12px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .3px;
+}
+.reminder-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.reminder-row input[type="time"] {
+  flex: 1; min-width: 0; padding: 8px 10px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font-size: 14px;
+}
+.reminder-row input[type="checkbox"] { width: 18px; height: 18px; margin: 0; }
+.reminders-hint { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
