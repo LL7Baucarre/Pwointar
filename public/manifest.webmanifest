@@ -1,0 +1,26 @@
+{
+  "name": "Pwointar — Pointeuse gamifiée",
+  "short_name": "Pwointar",
+  "description": "Pointe tes heures de travail, gagne de l'XP et garde tes streaks !",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14102b",
+  "theme_color": "#1a1033",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

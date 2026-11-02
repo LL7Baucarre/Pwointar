@@ -1,0 +1,14 @@
+{
+  "name": "pwointar",
+  "version": "1.1.0",
+  "description": "Pointeuse gamifiée — PWA dockerisée avec notifications push",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2",
+    "web-push": "^3.6.7"
+  }
+}

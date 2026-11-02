@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pwointar — Pointeuse gamifiée</title>
+  <meta name="description" content="Pointe tes heures de travail, gagne de l'XP et garde tes streaks !">
+  <meta name="theme-color" content="#1a1033">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ===== Header ===== -->
+    <header class="topbar">
+      <div class="brand">⏰ <span>Pwointar</span></div>
+      <div class="hud">
+        <div class="hud-chip level" id="hud-level" title="Niveau">
+          <span class="hud-icon">⭐</span><span id="hud-level-num">1</span>
+        </div>
+        <div class="hud-chip streak" id="hud-streak" title="Série de jours actifs">
+          <span class="hud-icon">🔥</span><span id="hud-streak-num">0</span>
+        </div>
+        <div class="hud-chip coins" id="hud-money" title="Argent cumulé">
+          <span class="hud-icon">💰</span><span id="hud-money-num">0 €</span>
+        </div>
+      </div>
+      <div class="xpbar" title="XP">
+        <div class="xpbar-fill" id="xpbar-fill"></div>
+        <span class="xpbar-label" id="xpbar-label">0 / 100 XP</span>
+      </div>
+    </header>
+
+    <main id="main">
+
+      <!-- ===== Onglet : Pointeuse ===== -->
+      <section class="tab" id="tab-timer">
+        <div class="goal-card" id="goal-card">
+          <div class="goal-line">
+            <span>Objectif du jour</span>
+            <span id="goal-target">8 h</span>
+          </div>
+          <div class="goal-bar"><div id="goal-fill"></div></div>
+          <div class="goal-line sub">
+            <span id="goal-done">0 h 00</span>
+            <span id="goal-earned">0,00 €</span>
+          </div>
+        </div>
+
+        <div class="timer-zone">
+          <div class="timer-ring" id="timer-ring">
+            <div class="timer-display" id="timer-display">00:00:00</div>
+            <div class="timer-note" id="timer-note">PRÊT À POINTER</div>
+          </div>
+          <button class="big-btn" id="btn-start">▶ POINTER</button>
+          <button class="big-btn stop hidden" id="btn-stop">■ STOP (+XP)</button>
+          <div class="timer-task hidden" id="timer-task"></div>
+        </div>
+
+        <div class="quick-actions">
+          <button class="qa" id="qa-manual">✏️ Pointage manuel</button>
+          <button class="qa" id="qa-start-new">🆕 Nouvelle session</button>
+        </div>
+
+        <div class="card">
+          <h3>⏱️ Dernières sessions</h3>
+          <ul class="entry-list" id="recent-list"></ul>
+        </div>
+      </section>
+
+      <!-- ===== Onglet : Tâches ===== -->
+      <section class="tab hidden" id="tab-tasks">
+        <form class="card form" id="task-form">
+          <h3>➕ Nouvelle tâche</h3>
+          <input type="text" id="task-title" placeholder="Ex : Refonte du bug #42" required maxlength="120">
+          <div class="form-row">
+            <label>Estimation
+              <div class="stepper"><button type="button" data-target="task-est" data-step="-15">−</button>
+              <input type="number" id="task-est" value="60" min="0" step="15"><span>min</span>
+              <button type="button" data-target="task-est" data-step="15">+</button></div>
+            </label>
+            <label>Bonus XP
+              <div class="stepper"><button type="button" data-target="task-xp" data-step="-5">−</button>
+              <input type="number" id="task-xp" value="25" min="0" step="5"><span>XP</span>
+              <button type="button" data-target="task-xp" data-step="5">+</button></div>
+            </label>
+          </div>
+          <button type="submit" class="btn">Ajouter</button>
+        </form>
+
+        <div class="card">
+          <h3>📋 À faire <span class="pill" id="tasks-open-count"></span></h3>
+          <ul class="task-list" id="task-list-open"></ul>
+        </div>
+        <div class="card">
+          <h3>✅ Terminées <span class="pill" id="tasks-done-count"></span></h3>
+          <ul class="task-list done" id="task-list-done"></ul>
+        </div>
+      </section>
+
+      <!-- ===== Onglet : Stats ===== -->
+      <section class="tab hidden" id="tab-stats">
+        <div class="stat-grid">
+          <div class="stat-tile"><div class="stat-num" id="stat-today">0h</div><div class="stat-label">Aujourd'hui</div></div>
+          <div class="stat-tile"><div class="stat-num" id="stat-week">0h</div><div class="stat-label">Cette semaine</div></div>
+          <div class="stat-tile"><div class="stat-num" id="stat-month">0h</div><div class="stat-label">30 jours</div></div>
+          <div class="stat-tile"><div class="stat-num" id="stat-total">0h</div><div class="stat-label">Total</div></div>
+        </div>
+        <div class="card">
+          <h3>📊 14 derniers jours</h3>
+          <div class="chart" id="chart-days"></div>
+        </div>
+        <div class="card">
+          <h3>🕒 Répartition par heure</h3>
+          <div class="chart hours" id="chart-hours"></div>
+        </div>
+        <div class="card">
+          <h3>🎯 Temps par tâche</h3>
+          <ul class="task-time-list" id="task-time-list"></ul>
+        </div>
+      </section>
+
+      <!-- ===== Onglet : Profil ===== -->
+      <section class="tab hidden" id="tab-profile">
+        <div class="card profile-card">
+          <div class="profile-level">
+            <div class="level-circle" id="profile-level-circle">1</div>
+            <div>
+              <div class="profile-name">Ton avatar</div>
+              <div class="profile-xp" id="profile-xp"></div>
+            </div>
+          </div>
+          <h3>🏅 Badges</h3>
+          <div class="badges" id="badges"></div>
+        </div>
+
+        <div class="card form" id="push-card">
+          <h3>🔔 Notifications push</h3>
+          <div class="push-status" id="push-status">État : …</div>
+          <div class="btn-row">
+            <button type="button" class="btn" id="btn-push-enable">🔔 Activer</button>
+            <button type="button" class="btn ghost" id="btn-push-test">🧪 Tester</button>
+          </div>
+          <button type="button" class="btn ghost hidden" id="btn-push-disable" style="margin-top:8px">🔕 Désactiver</button>
+          <label class="check-line" style="margin-top:12px;flex-direction:row;display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="set-notify-enabled" style="width:18px;height:18px;margin:0">
+            Rappels automatiques actifs
+          </label>
+          <label>Rappel si session trop longue (min)
+            <div class="stepper"><button type="button" data-target="set-notify-stop" data-step="-30">−</button>
+            <input type="number" id="set-notify-stop" min="15" step="30"><span>min</span>
+            <button type="button" data-target="set-notify-stop" data-step="30">+</button></div>
+          </label>
+          <label>Rappel quotidien de pointer
+            <input type="time" id="set-daily-remind">
+          </label>
+        </div>
+
+        <form class="card form" id="settings-form">
+          <h3>⚙️ Réglages</h3>
+          <label>Taux horaire
+            <div class="input-unit"><input type="number" id="set-rate" min="0" step="0.5"><span id="set-currency-label">€</span></div>
+          </label>
+          <label>Devise
+            <select id="set-currency">
+              <option value="EUR">EUR €</option>
+              <option value="USD">USD $</option>
+              <option value="CHF">CHF</option>
+              <option value="GBP">GBP £</option>
+              <option value="CAD">CAD $</option>
+            </select>
+          </label>
+          <label>Objectif quotidien
+            <div class="stepper"><button type="button" data-target="set-goal" data-step="-30">−</button>
+            <input type="number" id="set-goal" min="0" step="30"><span>min</span>
+            <button type="button" data-target="set-goal" data-step="30">+</button></div>
+          </label>
+          <label>Seuil « journée active » (pour la streak 🔥)
+            <div class="stepper"><button type="button" data-target="set-active" data-step="-5">−</button>
+            <input type="number" id="set-active" min="1" step="5"><span>min</span>
+            <button type="button" data-target="set-active" data-step="5">+</button></div>
+          </label>
+          <button type="submit" class="btn">Enregistrer</button>
+        </form>
+
+        <form class="card form" id="manual-form">
+          <h3>✏️ Pointage manuel</h3>
+          <div class="form-row">
+            <label>Date <input type="date" id="manual-date"></label>
+            <label>De <input type="time" id="manual-start"></label>
+            <label>À <input type="time" id="manual-end"></label>
+          </div>
+          <label>Tâche (optionnel)
+            <select id="manual-task"><option value="">— aucune —</option></select>
+          </label>
+          <label>Note <input type="text" id="manual-note" placeholder="Optionnel"></label>
+          <button type="submit" class="btn">Ajouter</button>
+        </form>
+
+        <div class="card">
+          <h3>📜 Historique complet</h3>
+          <ul class="entry-list" id="all-entries"></ul>
+        </div>
+      </section>
+    </main>
+
+    <!-- ===== Nav bas ===== -->
+    <nav class="bottom-nav" id="nav">
+      <button data-tab="timer" class="active">⏱️<span>Pointeuse</span></button>
+      <button data-tab="tasks">📋<span>Tâches</span></button>
+      <button data-tab="stats">📊<span>Stats</span></button>
+      <button data-tab="profile">😀<span>Profil</span></button>
+    </nav>
+
+    <div id="toasts"></div>
+    <div id="confetti-layer"></div>
+  </div>
+
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
+  </script>
+</body>
+</html>

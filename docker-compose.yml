@@ -1,0 +1,9 @@
+services:
+  pwointar:
+    build: .
+    container_name: pwointar
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
