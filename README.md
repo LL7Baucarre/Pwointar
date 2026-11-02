@@ -19,12 +19,22 @@ Puis ouvre **http://localhost:3000** (sur ton PC) ou **http://\<ip-de-ton-PC\>:3
 
 | Zone | Ce que tu peux faire |
 |---|---|
-| ⏱️ **Pointeuse** | Gros bouton pointer → **⏸ PAUSE / ▶ REPRENDRE** (plus de stop !), timer géant, **compteur d'argent défilant** dans l'anneau, objectif du jour, les pauses ne pointent pas |
+| ⏱️ **Pointeuse** | Gros bouton pointer → **⏸ PAUSE / ▶ REPRENDRE**, timer géant, **compteur d'argent défilant** dans l'anneau, objectif du jour, objectif de la semaine 🏦, les pauses ne pointent pas |
+| 🌙 **Clôturer la journée** | Quand le chrono est en pause, le bouton **🌙 Clôturer la journée** termine la session : les minutes du jour sont figées (streak 🔥 et XP validés tout de suite) et la prochaine reprise repart de zéro |
 | 🗓️ **Journées auto** | Dès que tu changes de jour, la session est **scindée automatiquement** : les minutes passées sont clôturées pour ce jour-là, le gros chrono continue sur le nouveau (un week-end en pause = aucune ligne fantôme) |
 | ⏳ **Chronos de tâches** | Lance jusqu'à **3 chronos en parallèle** sous le gros chrono : 📌 rattaché au gros chrono, ou ⏱️ minuteur autonome. Pause/reprise par chrono, création de tâche ✨ à la volée |
 | 📋 **Tâches** | Ajouter des tâches avec estimation et bonus XP, les cocher pour gagner l'XP, bouton ▶ pour démarrer un chrono directement |
-| 📊 **Stats** | Aujourd'hui / semaine / 30 jours / total, graphique des 14 derniers jours, répartition par heure, temps par tâche |
-| 😀 **Profil** | Niveau, badges, réglages (taux horaire 💶, devise, objectif quotidien, seuil de streak), pointage manuel, historique |
+| 📊 **Stats** | Aujourd'hui / semaine (lundi → dimanche) / 30 jours / total, **banque de rattrapage 🏦**, graphique des 14 derniers jours, répartition par heure, temps par tâche |
+| 😀 **Profil** | Niveau, badges, réglages (taux horaire 💶, devise, objectif quotidien, **objectif hebdomadaire**, seuil de streak), pointage manuel, historique |
+
+### 🏦 Rattrapage — comment ça marche
+
+Règle ton **objectif hebdomadaire** dans le Profil (0 = désactivé). La semaine va du **lundi au dimanche**.
+
+- Chaque **semaine terminée** où tu as pointé au moins une fois : le **surplus** (au-delà de l'objectif) est **versé dans la banque de rattrapage** 🏦 ; un **déficit** est retiré de la banque (jamais négatif — les semaines sans aucun pointage ne comptent pas, vacances incluses).
+- La **semaine en cours** n'est pas encore versée : elle s'affiche en direct sous l'objectif du jour (barre dorée + `🏦 +X h → rattrapage` dès que tu dépasses).
+- La banque s'affiche dans l'onglet **Stats** (« Rattrapage en banque » + surplus de la semaine), et un push 🎯 part la première fois que tu atteins l'objectif de la semaine.
+- Activer l'objectif démarre la banque **cette semaine-là** (l'historique d'avant n'est jamais recompté rétroactivement) ; changer la valeur de l'objectif re-base le calcul sur les semaines suivies.
 
 ### 📌 Chronos de tâches — comment ça marche
 
@@ -49,6 +59,8 @@ Quand elles sont actives, le serveur t'envoie automatiquement :
 - **⏰ Rappels de pointage multiples** — une liste d'heures (8 max) réglable dans l'onglet Profil ; à chaque rappel, un push part si tu ne pointes pas à ce moment-là
 - **⏰ Rappel de longue session** — si le chrono tourne sans pause pendant la durée configurée (par défaut 240 min, réglable) : anti-oubli de pause
 - **🎯 Objectif du jour atteint** — dès que tu passes ton quota
+- **🎯 Objectif de la semaine atteint** — la première fois de la semaine ; chaque minute de plus ira au 🏦 rattrapage
+- **🌙 Journée clôturée** — récap des minutes pointées quand tu clôtures la journée
 - **⏸ Résumé en pause** — minutes du jour + état du gros chrono quand tu mets en pause
 
 > ⚠️ Les navigateurs n'autorisent le push que sur une **origine sécurisée** : `http://localhost` fonctionne directement. Depuis un téléphone en HTTP (IP local), le navigateur refusera la permission — passe par HTTPS (proxy type Caddy/Nginx avec certificat, ou exposition via ton serveur) pour que ça marche sur mobile. Sur **iOS**, il faut aussi que la PWA soit installée sur l'écran d'accueil (Safari ≥ 16.4).

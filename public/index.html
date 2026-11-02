@@ -48,6 +48,17 @@
             <span id="goal-done">0 h 00</span>
             <span id="goal-earned">0,00 €</span>
           </div>
+          <div class="goal-sep hidden" id="week-goal-block">
+            <div class="goal-line">
+              <span>Objectif de la semaine</span>
+              <span id="week-goal-target">40 h</span>
+            </div>
+            <div class="goal-bar"><div id="week-goal-fill"></div></div>
+            <div class="goal-line sub">
+              <span id="week-goal-done">0 h 00</span>
+              <span id="week-rattrapage">🏦 +0 h 00</span>
+            </div>
+          </div>
         </div>
 
         <div class="timer-zone">
@@ -59,6 +70,7 @@
           <button class="big-btn" id="btn-start">▶ POINTER</button>
           <button class="big-btn pause hidden" id="btn-pause">⏸ PAUSE</button>
           <button class="big-btn resume hidden" id="btn-resume">▶ REPRENDRE</button>
+          <button class="big-btn close-day hidden" id="btn-close-day">🌙 Clôturer la journée</button>
           <div class="timer-task hidden" id="timer-task"></div>
         </div>
 
@@ -137,6 +149,10 @@
           <div class="stat-tile"><div class="stat-num" id="stat-month">0h</div><div class="stat-label">30 jours</div></div>
           <div class="stat-tile"><div class="stat-num" id="stat-total">0h</div><div class="stat-label">Total</div></div>
         </div>
+        <div class="stat-grid hidden" id="rattrapage-grid">
+          <div class="stat-tile"><div class="stat-num gold" id="rat-balance">0h</div><div class="stat-label">🏦 Rattrapage en banque</div></div>
+          <div class="stat-tile"><div class="stat-num gold" id="rat-week">+0h</div><div class="stat-label">Surplus de la semaine</div></div>
+        </div>
         <div class="card">
           <h3>📊 14 derniers jours</h3>
           <div class="chart" id="chart-days"></div>
@@ -209,6 +225,12 @@
             <input type="number" id="set-goal" min="0" step="30"><span>min</span>
             <button type="button" data-target="set-goal" data-step="30">+</button></div>
           </label>
+          <label>Objectif hebdomadaire (0 = désactivé)
+            <div class="stepper"><button type="button" data-target="set-weekgoal" data-step="-60">−</button>
+            <input type="number" id="set-weekgoal" min="0" step="60"><span>min</span>
+            <button type="button" data-target="set-weekgoal" data-step="60">+</button></div>
+          </label>
+          <p class="field-hint">🏦 La semaine va du lundi au dimanche. Chaque semaine dépassée verse le surplus en rattrapage ; une semaine en dessous (où tu as pointé au moins une fois) l'utilise — jamais négatif.</p>
           <label>Seuil « journée active » (pour la streak 🔥)
             <div class="stepper"><button type="button" data-target="set-active" data-step="-5">−</button>
             <input type="number" id="set-active" min="1" step="5"><span>min</span>

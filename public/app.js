@@ -155,6 +155,7 @@ function renderTimerUI() {
   $('btn-start').classList.toggle('hidden', open);
   $('btn-pause').classList.toggle('hidden', !running);
   $('btn-resume').classList.toggle('hidden', !open || running);
+  $('btn-close-day').classList.toggle('hidden', !open || running);
   $('timer-ring').classList.toggle('running', running);
   $('timer-ring').classList.toggle('paused', open && !running);
   $('timer-note').textContent = running ? 'EN COURS' : (open ? 'EN PAUSE' : 'PRÊT À POINTER');
@@ -191,6 +192,7 @@ function tick() {
     $('goal-fill').style.width = Math.min(100, goal > 0 ? (today / goal) * 100 : 0) + '%';
     $('stat-today').textContent = fmtDuration(today);
   }
+  renderWeekGoal();
   // horloges des chronos actifs
   for (const c of state.chronos) {
     const t1 = $('chrono-time-' + c.id);
@@ -219,6 +221,27 @@ function renderGoal(S) {
   $('goal-earned').textContent = fmtMoney(S.today / 60 * S.settings.hourly_rate, S.settings.currency);
   const pct = Math.min(100, goal > 0 ? (done / goal) * 100 : 0);
   $('goal-fill').style.width = pct + '%';
+}
+
+// Minutes de la semaine calendaire (lundi → dimanche), session en cours incluse
+function weekLiveMinutes() {
+  if (!state.S) return 0;
+  return Math.max(0, (state.S.week_minutes || 0) - (state.S.today || 0) + todayLiveMinutes());
+}
+// Barre « objectif de la semaine » : en direct, surplus → rattrapage 🏦
+function renderWeekGoal() {
+  if (!state.S) return;
+  const wg = state.S.settings.weekly_goal_minutes || 0;
+  $('week-goal-block').classList.toggle('hidden', wg <= 0);
+  if (wg <= 0) return;
+  const done = weekLiveMinutes();
+  $('week-goal-target').textContent = fmtDuration(wg);
+  $('week-goal-done').textContent = done >= 60 ? fmtDuration(done) : `${Math.round(done)} min`;
+  $('week-goal-fill').style.width = Math.min(100, (done / wg) * 100) + '%';
+  const surplus = done - wg;
+  $('week-rattrapage').textContent = surplus >= 1
+    ? `🏦 +${fmtDuration(surplus)} → rattrapage`
+    : `reste ${fmtDuration(Math.max(0, wg - done))}`;
 }
 
 function renderRecent(list) {
@@ -324,6 +347,14 @@ function renderStats(S) {
   $('stat-today').textContent = fmtDuration(S.today);
   $('stat-week').textContent = fmtDuration(S.week_minutes);
   $('stat-month').textContent = fmtDuration(S.month_minutes);
+  // 🏦 banque de rattrapage (visible si un objectif hebdo est défini)
+  const rat = S.rattrapage || {};
+  const ratOn = (rat.goal_minutes || 0) > 0;
+  $('rattrapage-grid').classList.toggle('hidden', !ratOn);
+  if (ratOn) {
+    $('rat-balance').textContent = fmtDuration(rat.balance_min || 0);
+    $('rat-week').textContent = '+' + fmtDuration(rat.current_surplus_min || 0);
+  }
   fetchStats().then(st => {
     if (!st) return;
     $('stat-total').textContent = fmtDuration(st.total.m);
@@ -388,6 +419,7 @@ function renderSettings(settings, g) {
   $('set-rate').value = settings.hourly_rate;
   $('set-currency').value = settings.currency;
   $('set-goal').value = settings.daily_goal_minutes;
+  $('set-weekgoal').value = settings.weekly_goal_minutes ?? 0;
   $('set-active').value = settings.active_day_minutes;
   $('set-notify-stop').value = settings.notify_stop_minutes;
   $('set-notify-enabled').checked = !!settings.notify_enabled;
@@ -476,9 +508,26 @@ async function resumeTimer() {
   } catch (err) { toast('⚠️ ' + err.message); }
 }
 
+// 🌙 Clôturer la journée (chrono en pause) : la session prend fin, les minutes du
+// jour sont figées et la prochaine reprise repart de zéro.
+async function closeDay() {
+  const mins = todayLiveMinutes();
+  if (!confirm(`Clôturer la journée ? ${fmtDuration(mins)} pointées aujourd'hui — le chrono s'arrêtera et repartira de zéro à la prochaine reprise.`)) return;
+  try {
+    const r = await api('/timer/close', { method: 'POST', body: { tzOffset: tzOffsetMs } });
+    state.timer = null;
+    toast(`🌙 Journée clôturée — ${fmtDuration(r.today ?? mins)} pointées aujourd'hui 👏`);
+    if (r.paused_chronos) toast(`⏸ ${r.paused_chronos} chrono(s) rattaché(s) en pause aussi`);
+    if ((r.today ?? 0) > 0) confetti(30);
+    if (r.gamification) gamifyDiff(r.gamification);
+    await refresh();
+  } catch (err) { toast('⚠️ ' + err.message); }
+}
+
 $('btn-start').onclick = () => startTimer(null);
 $('btn-pause').onclick = pauseTimer;
 $('btn-resume').onclick = resumeTimer;
+$('btn-close-day').onclick = closeDay;
 $('qa-start-new').onclick = () => {
   if (state.timer) { toast('⚠️ Une session est déjà en cours'); return; }
   const sel = $('manual-task');
@@ -772,6 +821,7 @@ $('settings-form').onsubmit = async (e) => {
         hourly_rate: +$('set-rate').value,
         currency: $('set-currency').value,
         daily_goal_minutes: +$('set-goal').value,
+        weekly_goal_minutes: Math.max(0, +$('set-weekgoal').value || 0),
         active_day_minutes: Math.max(1, +$('set-active').value),
         notify_stop_minutes: Math.max(15, +$('set-notify-stop').value || 240),
         notify_enabled: $('set-notify-enabled').checked,

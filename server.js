@@ -86,6 +86,7 @@ function addColumn(table, col, def) {
 addColumn('settings', 'notify_enabled', 'INTEGER NOT NULL DEFAULT 1');
 addColumn('settings', 'notify_stop_minutes', 'INTEGER NOT NULL DEFAULT 240');
 addColumn('settings', 'daily_remind', "TEXT NOT NULL DEFAULT '09:00'");
+addColumn('settings', 'weekly_goal_minutes', 'INTEGER NOT NULL DEFAULT 0');
 
 // Pause du gros chrono : temps actif accumulé + moment de la reprise en cours.
 // (NULL = mode hérité « tourne depuis start_ms »)
@@ -228,6 +229,7 @@ function getSettings() {
   return {
     hourly_rate: s.hourly_rate, currency: s.currency,
     daily_goal_minutes: s.daily_goal_minutes, active_day_minutes: s.active_day_minutes,
+    weekly_goal_minutes: s.weekly_goal_minutes ?? 0,
     notify_enabled: !!s.notify_enabled, notify_stop_minutes: s.notify_stop_minutes,
     daily_remind: s.daily_remind || '',
   };
@@ -273,6 +275,65 @@ function buildDayStats(limitDays = 14) {
     GROUP BY date ORDER BY date DESC LIMIT ?
   `).all(limitDays);
   return rows;
+}
+
+// --- Semaine calendaire (lundi → dimanche) ---------------------------------
+function weekRangeOf(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  const dow = (d.getDay() + 6) % 7; // lundi = 0
+  const from = new Date(d); from.setDate(d.getDate() - dow);
+  const to = new Date(from); to.setDate(from.getDate() + 6);
+  return [ymd(from), ymd(to)];
+}
+function calendarWeekMinutes(dateStr) {
+  const [from, to] = weekRangeOf(dateStr);
+  return db.prepare('SELECT COALESCE(SUM(minutes),0) AS m FROM entries WHERE end_ms IS NOT NULL AND date >= ? AND date <= ?')
+    .get(from, to).m;
+}
+// Minutes d'une plage [from..to] (entrées clôturées + session en cours + minuteurs) — pour les pushs
+function rangeMinutesFull(fromStr, toStr, now = Date.now()) {
+  let m = db.prepare('SELECT COALESCE(SUM(minutes),0) AS m FROM entries WHERE end_ms IS NOT NULL AND date >= ? AND date <= ?')
+    .get(fromStr, toStr).m;
+  const s = sessionOpen();
+  if (s && s.date >= fromStr && s.date <= toStr) m += sessionElapsedMin(s, now);
+  for (const c of openChronos()) {
+    if (c.mode === 'standalone' && c.date >= fromStr && c.date <= toStr) m += chronoActiveMs(c, now) / 60000;
+  }
+  return m;
+}
+
+// 🏦 Rattrapage : chaque semaine terminée (lundi→dimanche) où tu as pointé au moins
+// une fois verse son surplus dans la banque — ou en retire son déficit (le solde
+// ne descend jamais sous 0). Les semaines sans aucun pointage ne comptent pas,
+// et la semaine en cours n'est pas encore versée.
+function rattrapageInfo(effectiveToday) {
+  const goal = getSettings().weekly_goal_minutes || 0;
+  const info = {
+    goal_minutes: goal, balance_min: 0, since_date: null,
+    current_week_minutes: 0, current_surplus_min: 0,
+  };
+  if (goal <= 0) return info;
+  info.current_week_minutes = calendarWeekMinutes(effectiveToday);
+  info.current_surplus_min = Math.max(0, info.current_week_minutes - goal);
+  const since = kvGet('weekly_goal_since');
+  if (!since) return info;
+  info.since_date = since;
+  const [curFrom] = weekRangeOf(effectiveToday);
+  const rows = db.prepare(`
+    SELECT date, SUM(minutes) AS m FROM entries
+    WHERE end_ms IS NOT NULL AND date >= ? AND date < ?
+    GROUP BY date ORDER BY date`).all(since, curFrom);
+  const byWeek = new Map();
+  for (const r of rows) {
+    const [from] = weekRangeOf(r.date);
+    byWeek.set(from, (byWeek.get(from) || 0) + r.m);
+  }
+  let bal = 0;
+  for (const from of [...byWeek.keys()].sort()) {
+    bal = Math.max(0, bal + (byWeek.get(from) - goal));
+  }
+  info.balance_min = bal;
+  return info;
 }
 
 // ---------------------------------------------------------------------------
@@ -424,8 +485,9 @@ app.get('/api/bootstrap', (req, res) => {
   const tasks = db.prepare('SELECT * FROM tasks ORDER BY done ASC, created_at DESC').all();
   const recent = db.prepare('SELECT * FROM entries WHERE end_ms IS NOT NULL ORDER BY start_ms DESC LIMIT 20').all().map(entryToJson);
   const dayStats = buildDayStats(14);
-  const weekMinutes = lastDaysSum(7, effectiveToday);
+  const weekMinutes = calendarWeekMinutes(effectiveToday);
   const monthMinutes = lastDaysSum(30, effectiveToday);
+  const rattrapage = rattrapageInfo(effectiveToday);
   const chronos = openChronos().map(chronoToJson);
   const chronosDone = db.prepare(`
     SELECT c.id, c.task_id, c.mode, c.active_ms, c.entry_id, c.stopped_at,
@@ -443,6 +505,7 @@ app.get('/api/bootstrap', (req, res) => {
     today: effTodayMinutes,
     week_minutes: weekMinutes,
     month_minutes: monthMinutes,
+    rattrapage,
     chronos,
     chronos_done_today: chronosDone,
     reminders,
@@ -510,6 +573,37 @@ app.post('/api/timer/pause', (req, res) => {
     timer: entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(s.id)),
     paused_chronos: pausedChronos.length,
     today: doneToday,
+  });
+});
+
+// 🌙 Clôturer la journée : la session ouverte est terminée maintenant (les minutes
+// du jour sont figées), les chronos rattachés passent en ⏸ auto. La prochaine
+// reprise créera une nouvelle session (repart de zéro).
+app.post('/api/timer/close', (req, res) => {
+  rollSessionDay();
+  const s = sessionOpen();
+  if (!s) return res.status(409).json({ error: 'Aucune session en cours' });
+  const now = Date.now();
+  const activeTotal = (s.active_ms || 0)
+    + (s.running_since != null ? Math.max(0, now - s.running_since) : 0);
+  db.prepare('UPDATE entries SET end_ms=?, minutes=?, active_ms=?, running_since=NULL WHERE id=?')
+    .run(now, Math.max(0.1, activeTotal / 60000), activeTotal, s.id);
+  const pausedChronos = freezeAttachedChronos(now);
+  clearLastPause(); // journée finie : un futur chrono à la volée ne remontera pas avant la clôture
+  const tzo = (req.body || {}).tzOffset;
+  const today = todayStr(typeof tzo === 'number' ? tzo : undefined);
+  const doneToday = dayMinutesFull(today, now);
+  if (getSettings().notify_enabled) {
+    sendPushAll('🌙 Journée clôturée',
+      `${fmtMinutesFr(doneToday)} pointées aujourd'hui — bien joué 👏`, 'close').catch(() => {});
+  }
+  res.json({
+    timer: null, closed: true,
+    minutes: activeTotal / 60000,
+    today: doneToday,
+    rattrapage: rattrapageInfo(today),
+    gamification: computeGamification(),
+    paused_chronos: pausedChronos.length,
   });
 });
 
@@ -747,12 +841,13 @@ app.delete('/api/reminders/:id', (req, res) => {
 
 // --- Réglages ---------------------------------------------------------------
 app.put('/api/settings', (req, res) => {
-  const { hourly_rate, currency, daily_goal_minutes, active_day_minutes, notify_enabled, notify_stop_minutes, daily_remind } = req.body || {};
+  const { hourly_rate, currency, daily_goal_minutes, active_day_minutes, weekly_goal_minutes, notify_enabled, notify_stop_minutes, daily_remind } = req.body || {};
   db.prepare(`UPDATE settings SET
     hourly_rate = COALESCE(?, hourly_rate),
     currency = COALESCE(?, currency),
     daily_goal_minutes = COALESCE(?, daily_goal_minutes),
     active_day_minutes = COALESCE(?, active_day_minutes),
+    weekly_goal_minutes = COALESCE(?, weekly_goal_minutes),
     notify_enabled = COALESCE(?, notify_enabled),
     notify_stop_minutes = COALESCE(?, notify_stop_minutes),
     daily_remind = COALESCE(?, daily_remind),
@@ -762,10 +857,13 @@ app.put('/api/settings', (req, res) => {
     currency || null,
     daily_goal_minutes !== undefined ? Number(daily_goal_minutes) : null,
     active_day_minutes !== undefined ? Number(active_day_minutes) : null,
+    weekly_goal_minutes !== undefined ? Math.max(0, Number(weekly_goal_minutes) || 0) : null,
     notify_enabled !== undefined ? (notify_enabled ? 1 : 0) : null,
     notify_stop_minutes !== undefined ? Number(notify_stop_minutes) : null,
     typeof daily_remind === 'string' ? daily_remind : null,
     Date.now());
+  // La banque de rattrapage démarre la semaine où l'objectif hebdomadaire est activé
+  if (Number(weekly_goal_minutes) > 0 && !kvGet('weekly_goal_since')) kvSet('weekly_goal_since', todayStr());
   res.json({ settings: getSettings(), gamification: computeGamification() });
 });
 
@@ -876,6 +974,18 @@ async function checkReminders() {
       await notifyIfEnabled('🎯 Objectif du jour atteint !',
         `Bravo, tu as pointé ${fmtMinutesFr(doneToday)} aujourd'hui. La suite est du bonus !`, 'goal');
       kvSet('goal_alert_' + today, '1');
+    }
+
+    // 2bis) Objectif de la semaine atteint → le surplus filera au 🏦 rattrapage
+    const wGoal = s.weekly_goal_minutes || 0;
+    if (wGoal > 0) {
+      const [wkFrom, wkTo] = weekRangeOf(today);
+      const doneWeek = rangeMinutesFull(wkFrom, wkTo, nowMs);
+      if (doneWeek >= wGoal && !kvGet('week_goal_alert_' + wkFrom)) {
+        await notifyIfEnabled('🎯 Objectif de la semaine atteint !',
+          `${fmtMinutesFr(doneWeek)} cette semaine — chaque minute de plus ira au 🏦 rattrapage`, 'week-goal');
+        kvSet('week_goal_alert_' + wkFrom, '1');
+      }
     }
 
     // 3) Rappels de pointage multiples : pendant la fenêtre du rappel (±30 min),

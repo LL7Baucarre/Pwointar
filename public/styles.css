@@ -111,6 +111,12 @@ main { padding: 16px; }
 .goal-bar { height: 10px; background: var(--panel2); border-radius: 999px; margin: 8px 0; overflow: hidden; }
 #goal-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--primary2)); border-radius: 999px; transition: width .6s ease; }
 
+/* --- Objectif de la semaine + rattrapage 🏦 --- */
+.goal-sep { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+#week-goal-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--gold), var(--fire)); border-radius: 999px; transition: width .6s ease; }
+.stat-num.gold { background: linear-gradient(135deg, var(--gold), var(--fire)); }
+.field-hint { font-size: 11px; color: var(--muted); margin: 0 0 10px; }
+
 /* ============ Timer ============ */
 .timer-zone { text-align: center; margin-bottom: 20px; }
 .timer-ring {
@@ -147,6 +153,12 @@ main { padding: 16px; }
 .big-btn:active { transform: scale(.96); }
 .big-btn.pause { background: linear-gradient(135deg, #f59e0b, #fbbf24); box-shadow: 0 6px 20px rgba(245,158,11,.4); }
 .hidden { display: none !important; }
+.big-btn.close-day {
+  background: var(--panel2); color: var(--muted);
+  border: 1px solid var(--border); box-shadow: none;
+  font-size: 15px; padding: 13px; margin-top: 10px;
+}
+.big-btn.close-day:hover { color: var(--text); border-color: var(--fire); }
 .timer-task { margin-top: 12px; font-size: 13px; color: var(--muted); }
 .timer-task b { color: var(--text); }
 
