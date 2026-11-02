@@ -6,6 +6,8 @@ const state = {
   S: null,               // bootstrap
   timer: null,           // session ouverte (gros chrono)
   chronos: [],           // chronos de tâches actifs
+  chronoTaskId: null,    // tâche choisie dans le sélecteur de chrono
+  chronoTaskOptions: [], // tâches proposées dans le sélecteur
   lastTick: 0,
 };
 
@@ -39,6 +41,11 @@ function todayLocal() { return new Date(Date.now() - tzOffsetMs).toISOString().s
 function chronoElapsedMs(c) {
   // temps actif accumulé + temps écoulé depuis la dernière reprise
   return (c.active_ms || 0) + (c.running ? Math.max(0, Date.now() - c.running_since) : 0);
+}
+function sessionElapsedMs(t) {
+  if (!t) return 0;
+  if (t.active_ms == null) return Math.max(0, Date.now() - t.start_ms); // ancien modèle
+  return (t.active_ms || 0) + (t.running ? Math.max(0, Date.now() - t.running_since) : 0);
 }
 
 async function api(path, opts = {}) {
@@ -82,7 +89,7 @@ function floatXp(text, anchor) {
   const el = document.createElement('div');
   el.className = 'float-xp';
   el.textContent = text;
-  const r = (anchor || $('btn-stop')).getBoundingClientRect();
+  const r = (anchor || $('btn-pause')).getBoundingClientRect();
   el.style.left = r.left + r.width / 2 + 'px';
   el.style.top = r.top + 'px';
   $('confetti-layer').parentElement.appendChild(el);
@@ -126,7 +133,7 @@ function renderAll(S) {
   renderSettings(S.settings, S.gamification);
   renderReminders(S.reminders);
   fillManualTaskSelect(S.tasks);
-  fillChronoTaskSelect(S.tasks);
+  renderTaskPicker(S.tasks);
   renderEntries(S);
 }
 
@@ -143,14 +150,17 @@ function renderHud(S) {
 }
 
 function renderTimerUI() {
-  const running = !!state.timer;
-  $('btn-start').classList.toggle('hidden', running);
-  $('btn-stop').classList.toggle('hidden', !running);
+  const open = !!state.timer;
+  const running = open && state.timer.running !== false;
+  $('btn-start').classList.toggle('hidden', open);
+  $('btn-pause').classList.toggle('hidden', !running);
+  $('btn-resume').classList.toggle('hidden', !open || running);
   $('timer-ring').classList.toggle('running', running);
-  $('timer-note').textContent = running ? 'EN COURS — LE XP S\'ACCUMULE' : 'PRÊT À POINTER';
+  $('timer-ring').classList.toggle('paused', open && !running);
+  $('timer-note').textContent = running ? 'EN COURS' : (open ? 'EN PAUSE' : 'PRÊT À POINTER');
   const t = state.timer;
-  $('timer-task').classList.toggle('hidden', !running || !t?.task_id);
-  if (running && t) {
+  $('timer-task').classList.toggle('hidden', !open || !t?.task_id);
+  if (open && t) {
     const task = state.S.tasks.find(x => x.id === t.task_id);
     $('timer-task').innerHTML = task ? `📌 <b>${esc(task.title)}</b>` : '';
   }
@@ -161,7 +171,7 @@ function renderTimerUI() {
 function todayLiveMinutes() {
   if (!state.S) return 0;
   let today = state.S.today;
-  if (state.timer) today += (Date.now() - state.timer.start_ms) / 60000;
+  if (state.timer) today += sessionElapsedMs(state.timer) / 60000;
   for (const c of state.chronos) {
     if (c.mode === 'standalone') today += chronoElapsedMs(c) / 60000;
   }
@@ -170,11 +180,9 @@ function todayLiveMinutes() {
 
 function tick() {
   if (state.timer) {
-    $('timer-display').textContent = fmtClock(Date.now() - state.timer.start_ms);
+    $('timer-display').textContent = fmtClock(sessionElapsedMs(state.timer));
   }
   const today = todayLiveMinutes();
-  const todayEl = $('timer-today');
-  if (todayEl) todayEl.textContent = `🗂️ Aujourd'hui · ${fmtDuration(today)}`;
   // objectif du jour + tuile stats en direct
   if (state.S) {
     const goal = state.S.settings.daily_goal_minutes;
@@ -190,7 +198,16 @@ function tick() {
     const t2 = $('task-chrono-time-' + c.id);
     if (t2) t2.textContent = fmtClock(chronoElapsedMs(c));
   }
+  updateMoneyCounter();
 }
+
+// Compteur défilant de l'argent gagné aujourd'hui (grille plus fine pour « défiler »)
+function updateMoneyCounter() {
+  if (!state.S) return;
+  const v = todayLiveMinutes() / 60 * state.S.settings.hourly_rate;
+  $('timer-today').textContent = fmtMoney(v, state.S.settings.currency);
+}
+setInterval(() => { if (state.S) updateMoneyCounter(); }, 250);
 
 setInterval(tick, 1000);
 
@@ -439,23 +456,29 @@ async function startTimer(taskId = null) {
   } catch (err) { toast('⚠️ ' + err.message); }
 }
 
-async function stopTimer() {
+async function pauseTimer() {
   try {
-    const r = await api('/timer/stop', { method: 'POST' });
-    state.timer = null;
-    const money = r.entry.money;
-    floatXp(`+${r.gained_xp} XP`);
-    toast(`⏹️ Session de ${fmtDuration(r.entry.minutes)} — +${r.gained_xp} XP, ${fmtMoney(money, state.S.settings.currency)} 💰`, 'gold');
-    if (r.entry.minutes >= 240) confetti(50);
-    else confetti(15);
-    if (r.paused_chronos) toast(`⏸ ${r.paused_chronos} chrono(s) rattaché(s) en pause — relance le gros chrono pour les reprendre`);
-    gamifyDiff(r.gamification);
+    const r = await api('/timer/pause', { method: 'POST', body: { tzOffset: tzOffsetMs } });
+    if (r.timer) state.timer = r.timer;
+    toast(`⏸ Pause — ${fmtDuration(r.today ?? 0)} pointées aujourd'hui 💤`);
+    if (r.paused_chronos) toast(`⏸ ${r.paused_chronos} chrono(s) rattaché(s) en pause aussi`);
+    await refresh();
+  } catch (err) { toast('⚠️ ' + err.message); }
+}
+
+async function resumeTimer() {
+  try {
+    const r = await api('/timer/resume', { method: 'POST' });
+    if (r.timer) state.timer = r.timer;
+    toast('▶️ C\'est reparti ! Empile l\'XP 💪');
+    if (r.resumed_chronos) toast(`⏱️ ${r.resumed_chronos} chrono(s) rattaché(s) repris`);
     await refresh();
   } catch (err) { toast('⚠️ ' + err.message); }
 }
 
 $('btn-start').onclick = () => startTimer(null);
-$('btn-stop').onclick = stopTimer;
+$('btn-pause').onclick = pauseTimer;
+$('btn-resume').onclick = resumeTimer;
 $('qa-start-new').onclick = () => {
   if (state.timer) { toast('⚠️ Une session est déjà en cours'); return; }
   const sel = $('manual-task');
@@ -479,6 +502,7 @@ async function startChrono(taskId, mode) {
     toast(r.chrono.mode === 'attached'
       ? `📌 « ${r.chrono.task_title} » rattaché au gros chrono`
       : `⏱️ « ${r.chrono.task_title} » lancée en minuteur`);
+    state.chronoTaskId = null;
     await refresh();
   } catch (err) { toast('⚠️ ' + err.message); }
 }
@@ -590,7 +614,7 @@ function updateChronoLaunchUI() {
   const noTasks = !state.S.tasks.some(t => !t.done);
   $('btn-chrono-attach').disabled = full || noTasks;
   $('btn-chrono-minuteur').disabled = full || noTasks || sessionRunning;
-  $('chrono-task').disabled = noTasks;
+  $('chrono-task-btn').disabled = noTasks;
   $('btn-chrono-fly').disabled = full;
   const hint = $('chrono-hint');
   if (full) hint.textContent = '⚠️ 3 chronos max en parallèle — stoppe-en un d\'abord.';
@@ -602,27 +626,66 @@ function updateChronoLaunchUI() {
   }
 }
 
-function fillChronoTaskSelect(tasks) {
-  const sel = $('chrono-task');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">— choisir une tâche —</option>';
-  tasks.filter(t => !t.done).forEach(t => {
-    const o = document.createElement('option');
-    o.value = t.id; o.textContent = t.title;
-    sel.appendChild(o);
-  });
-  sel.value = cur;
+// --- Sélecteur de tâche (dropdown maison) ------------------------------------
+function renderTaskPicker(tasks) {
+  state.chronoTaskOptions = (tasks || []).filter(t => !t.done);
+  const btn = $('chrono-task-btn');
+  const label = $('chrono-task-label');
+  const sel = state.chronoTaskOptions.find(t => t.id === state.chronoTaskId);
+  if (!sel) state.chronoTaskId = null;
+  label.textContent = sel ? sel.title : '— choisir une tâche —';
+  label.classList.toggle('placeholder', !sel);
+  btn.disabled = !state.chronoTaskOptions.length;
 }
 
+function closeTaskPicker() {
+  $('chrono-task-panel').classList.add('hidden');
+  $('chrono-task-picker').classList.remove('open');
+  $('chrono-task-btn').setAttribute('aria-expanded', 'false');
+}
+
+function openTaskPicker() {
+  const panel = $('chrono-task-panel');
+  panel.innerHTML = '';
+  const opts = state.chronoTaskOptions || [];
+  if (!opts.length) {
+    panel.innerHTML = '<div class="task-picker-empty">Aucune tâche ouverte — crée-la à la volée ✨</div>';
+  } else {
+    opts.forEach(t => {
+      const item = document.createElement('div');
+      item.className = 'task-picker-item' + (t.id === state.chronoTaskId ? ' sel' : '');
+      item.setAttribute('role', 'option');
+      item.innerHTML = `<span class="tp-title">${esc(t.title)}</span>
+        <span class="tp-meta">${t.est_minutes ? '~' + fmtDuration(t.est_minutes) + ' · ' : ''}+${t.xp_bonus} XP</span>`;
+      item.onclick = () => {
+        state.chronoTaskId = t.id;
+        renderTaskPicker(state.S ? state.S.tasks : []);
+        closeTaskPicker();
+      };
+      panel.appendChild(item);
+    });
+  }
+  panel.classList.remove('hidden');
+  $('chrono-task-picker').classList.add('open');
+  $('chrono-task-btn').setAttribute('aria-expanded', 'true');
+}
+
+$('chrono-task-btn').onclick = () => {
+  if ($('chrono-task-panel').classList.contains('hidden')) openTaskPicker();
+  else closeTaskPicker();
+};
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#chrono-task-picker')) closeTaskPicker();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeTaskPicker(); });
+
 $('btn-chrono-attach').onclick = () => {
-  const sel = $('chrono-task');
-  if (!sel.value) { toast('⚠️ Choisis une tâche'); return; }
-  startChrono(Number(sel.value), 'attached');
+  if (!state.chronoTaskId) { toast('⚠️ Choisis (ou crée) une tâche'); return; }
+  startChrono(state.chronoTaskId, 'attached');
 };
 $('btn-chrono-minuteur').onclick = () => {
-  const sel = $('chrono-task');
-  if (!sel.value) { toast('⚠️ Choisis une tâche'); return; }
-  startChrono(Number(sel.value), 'standalone');
+  if (!state.chronoTaskId) { toast('⚠️ Choisis (ou crée) une tâche'); return; }
+  startChrono(state.chronoTaskId, 'standalone');
 };
 $('btn-chrono-fly').onclick = () => {
   const box = $('chrono-fly-box');
@@ -861,9 +924,7 @@ async function refresh() {
   if (refreshing) return; refreshing = true;
   try {
     const S = await api('/bootstrap?tzOffset=' + tzOffsetMs);
-    if (!state.timer && S.timer) state.timer = S.timer;
-    if (state.timer && !S.timer) state.timer = null;
-    if (state.timer && S.timer && S.timer.start_ms === state.timer.start_ms) state.timer = S.timer;
+    state.timer = S.timer || null; // le serveur fait foi (gère pauses & scission par jour)
     state.S = S;
     if (S.push?.vapid_public) vapidPublic = S.push.vapid_public;
     renderAll(S);

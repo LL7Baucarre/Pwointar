@@ -53,17 +53,24 @@
         <div class="timer-zone">
           <div class="timer-ring" id="timer-ring">
             <div class="timer-display" id="timer-display">00:00:00</div>
-            <div class="timer-today" id="timer-today">🗂️ Aujourd'hui · 0 min</div>
+            <div class="timer-today" id="timer-today">0,00 €</div>
             <div class="timer-note" id="timer-note">PRÊT À POINTER</div>
           </div>
           <button class="big-btn" id="btn-start">▶ POINTER</button>
-          <button class="big-btn stop hidden" id="btn-stop">■ STOP (+XP)</button>
+          <button class="big-btn pause hidden" id="btn-pause">⏸ PAUSE</button>
+          <button class="big-btn resume hidden" id="btn-resume">▶ REPRENDRE</button>
           <div class="timer-task hidden" id="timer-task"></div>
         </div>
 
         <div class="card chrono-card">
           <h3>⏱️ Chronos de tâches <span class="pill" id="chrono-count"></span></h3>
-          <select id="chrono-task" aria-label="Tâche à chronométrer"></select>
+          <div class="task-picker" id="chrono-task-picker">
+            <button type="button" class="task-picker-btn" id="chrono-task-btn" aria-haspopup="listbox" aria-expanded="false">
+              <span id="chrono-task-label" class="task-picker-label placeholder">— choisir une tâche —</span>
+              <span class="task-picker-arrow">▾</span>
+            </button>
+            <div class="task-picker-panel hidden" id="chrono-task-panel" role="listbox"></div>
+          </div>
           <div class="btn-row chrono-launch-btns">
             <button type="button" class="btn ghost" id="btn-chrono-attach">📌 Rattacher</button>
             <button type="button" class="btn ghost" id="btn-chrono-minuteur">⏱️ Minuteur</button>

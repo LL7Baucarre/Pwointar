@@ -87,6 +87,20 @@ addColumn('settings', 'notify_enabled', 'INTEGER NOT NULL DEFAULT 1');
 addColumn('settings', 'notify_stop_minutes', 'INTEGER NOT NULL DEFAULT 240');
 addColumn('settings', 'daily_remind', "TEXT NOT NULL DEFAULT '09:00'");
 
+// Pause du gros chrono : temps actif accumulé + moment de la reprise en cours.
+// (NULL = mode hérité « tourne depuis start_ms »)
+addColumn('entries', 'active_ms', 'INTEGER');
+addColumn('entries', 'running_since', 'INTEGER');
+addColumn('entries', 'tz_offset', 'INTEGER');
+
+// Rendre les sessions déjà ouvertes pause-capables (héritage de l'ancien modèle)
+db.prepare('SELECT * FROM entries WHERE end_ms IS NULL').all().forEach((e) => {
+  if (e.active_ms == null) {
+    db.prepare('UPDATE entries SET active_ms=?, running_since=? WHERE id=?')
+      .run(Math.max(0, Date.now() - e.start_ms), e.start_ms, e.id);
+  }
+});
+
 const row = db.prepare('SELECT hourly_rate FROM settings WHERE id=1').get();
 if (row.hourly_rate === 0) db.prepare('UPDATE settings SET hourly_rate=25 WHERE id=1').run();
 
@@ -236,14 +250,20 @@ function totalMinutesToMoney(m) {
 function entryToJson(e) {
   const open = e.end_ms === null;
   const minutes = open
-    ? (Date.now() - e.start_ms) / 60000
+    ? sessionElapsedMin(e)
     : e.minutes;
   const s = getSettings();
-  return {
+  const j = {
     id: e.id, task_id: e.task_id, note: e.note,
     start_ms: e.start_ms, end_ms: e.end_ms, date: e.date,
     minutes, open, money: (minutes / 60) * s.hourly_rate,
   };
+  if (open) {
+    j.active_ms = e.active_ms ?? null;
+    j.running = e.active_ms == null ? true : e.running_since != null;
+    j.running_since = e.running_since ?? null;
+  }
+  return j;
 }
 
 function buildDayStats(limitDays = 14) {
@@ -262,6 +282,68 @@ const MAX_PARALLEL_CHRONOS = 3;
 
 const sessionOpen = () => db.prepare('SELECT * FROM entries WHERE end_ms IS NULL ORDER BY start_ms DESC LIMIT 1').get() || null;
 const openChronos = () => db.prepare('SELECT * FROM task_chronos WHERE stopped_at IS NULL').all();
+// la session ne « tourne » que si elle n'est pas en pause
+const sessionRunning = () => { const s = sessionOpen(); return (s && s.running_since != null) ? s : null; };
+// minutes actives d'une session (pauses exclues)
+function sessionElapsedMin(s, now = Date.now()) {
+  if (s.active_ms == null) return Math.max(0, now - s.start_ms) / 60000; // ancien modèle
+  return (s.active_ms + (s.running_since != null ? Math.max(0, now - s.running_since) : 0)) / 60000;
+}
+// minuit local (heure du device qui a créé l'entrée) et minuit du jour suivant
+function dayStartMs(dateStr, tzOffset) {
+  const off = typeof tzOffset === 'number' ? tzOffset : (-new Date().getTimezoneOffset() * 60000);
+  return Date.parse(dateStr + 'T00:00:00Z') - off;
+}
+function dayBoundaryNext(dateStr, tzOffset) { return dayStartMs(dateStr, tzOffset) + 86400000; }
+
+// Rend les chronos rattachés en pause quand la session (stop ou pause) s'arrête
+function freezeAttachedChronos(now) {
+  const rows = db.prepare("SELECT * FROM task_chronos WHERE stopped_at IS NULL AND mode='attached' AND running_since IS NOT NULL").all();
+  for (const c of rows) {
+    db.prepare('UPDATE task_chronos SET active_ms=?, running_since=NULL, auto_paused=1 WHERE id=?')
+      .run(c.active_ms + Math.max(0, now - c.running_since), c.id);
+  }
+  return rows;
+}
+// Sortir la session de pause (sans notifier) — utilisé par /timer/resume et quand
+// on rattache une tâche alors que le gros chrono est en pause
+function resumeSessionInternal(s, now) {
+  const tz = typeof s.tz_offset === 'number' ? s.tz_offset : undefined;
+  // si la session a « sauté » des jours entiers en pause, on repart de maintenant
+  const startFix = s.start_ms < dayStartMs(s.date, tz) ? now : s.start_ms;
+  db.prepare('UPDATE entries SET running_since=?, start_ms=? WHERE id=?').run(now, startFix, s.id);
+  clearLastPause();
+}
+// Passé un changement de journée : on scinde la session ouverte en tronçons par jour.
+// Le temps actif d'avant minuit est clôturé pour ce jour ; la session continue sur le nouveau jour.
+// (Les jours entiers passés en pause ne créent pas de ligne à 0 min.)
+function rollSessionDay() {
+  let open = sessionOpen();
+  if (!open) return 0;
+  const tz = typeof open.tz_offset === 'number' ? open.tz_offset : undefined;
+  const today = dateFromMs(Date.now(), tz);
+  let cuts = 0;
+  while (open && open.date < today) {
+    const now = Date.now();
+    const boundary = dayBoundaryNext(open.date, open.tz_offset);
+    const activeBefore = (open.active_ms || 0)
+      + (open.running_since != null && open.running_since < boundary ? (boundary - open.running_since) : 0);
+    if (open.running_since == null && activeBefore < 5) {
+      // session en pause et sans minutes actives pour ce jour → on saute simplement au nouveau jour
+      db.prepare('UPDATE entries SET date=?, start_ms=?, active_ms=0 WHERE id=?')
+        .run(dateFromMs(boundary, open.tz_offset), boundary, open.id);
+    } else {
+      db.prepare('UPDATE entries SET end_ms=?, minutes=?, active_ms=?, running_since=NULL WHERE id=?')
+        .run(boundary, Math.max(0.1, activeBefore / 60000), activeBefore, open.id);
+      const runningSince = open.running_since != null ? Math.max(boundary, open.running_since) : null;
+      db.prepare('INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes, active_ms, running_since, tz_offset) VALUES (?,?,?,NULL,?,0,0,?,?)')
+        .run(open.task_id, open.note, boundary, dateFromMs(boundary, open.tz_offset), runningSince, open.tz_offset);
+    }
+    cuts++;
+    open = sessionOpen();
+  }
+  return cuts;
+}
 
 function chronoActiveMs(c, now = Date.now()) {
   return (c.active_ms || 0) + (c.running_since ? Math.max(0, now - c.running_since) : 0);
@@ -284,8 +366,9 @@ function dateFromMs(ms, tzOffset) {
 }
 function createSession(taskId, note, tzOffset) {
   const start_ms = Date.now();
-  const info = db.prepare('INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes) VALUES (?,?,?,NULL,?,0)')
-    .run(taskId, note, start_ms, dateFromMs(start_ms, tzOffset));
+  const info = db.prepare(`INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes, active_ms, running_since, tz_offset)
+    VALUES (?,?,?,NULL,?,0,0,?,?)`)
+    .run(taskId, note, start_ms, dateFromMs(start_ms, tzOffset), start_ms, typeof tzOffset === 'number' ? tzOffset : null);
   return db.prepare('SELECT * FROM entries WHERE id=?').get(info.lastInsertRowid);
 }
 // Quand une (nouvelle) session démarre, on reprend les chronos rattachés auto-pausés
@@ -312,7 +395,7 @@ function claimableGap(now = Date.now()) {
 function dayMinutesFull(dateStr, now = Date.now()) {
   let m = db.prepare('SELECT COALESCE(SUM(minutes),0) AS m FROM entries WHERE date=? AND end_ms IS NOT NULL').get(dateStr).m;
   const s = sessionOpen();
-  if (s && s.date === dateStr) m += (now - s.start_ms) / 60000;
+  if (s && s.date === dateStr) m += sessionElapsedMin(s, now);
   for (const c of openChronos()) {
     if (c.mode === 'standalone' && c.date === dateStr) m += chronoActiveMs(c, now) / 60000;
   }
@@ -327,6 +410,8 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/bootstrap', (req, res) => {
+  // scission par jour du gros chrono si on a changé de journée
+  rollSessionDay();
   const settings = getSettings();
   const gamification = computeGamification();
   const open = db.prepare('SELECT * FROM entries WHERE end_ms IS NULL ORDER BY start_ms DESC LIMIT 1').get() || null;
@@ -390,35 +475,41 @@ app.post('/api/timer/start', (req, res) => {
   res.json({ timer: entryToJson(entry), resumed_chronos: resumed });
 });
 
-app.post('/api/timer/stop', (req, res) => {
-  const entry = db.prepare('SELECT * FROM entries WHERE end_ms IS NULL ORDER BY start_ms DESC LIMIT 1').get();
-  if (!entry) return res.status(409).json({ error: 'Aucune session en cours' });
-  const end_ms = Date.now();
-  const minutes = Math.max(0.1, (end_ms - entry.start_ms) / 60000);
-  db.prepare('UPDATE entries SET end_ms=?, minutes=? WHERE id=?').run(end_ms, minutes, entry.id);
-  const g = computeGamification();
-  kvDel('stop_alert_' + entry.id);
-
-  // Les chronos rattachés passent en pause auto (leur temps vient de la session)
-  const pausedChronos = db.prepare(`
-    SELECT * FROM task_chronos WHERE stopped_at IS NULL AND mode='attached' AND running_since IS NOT NULL`).all();
-  for (const c of pausedChronos) {
-    db.prepare('UPDATE task_chronos SET active_ms=?, running_since=NULL, auto_paused=1 WHERE id=?')
-      .run(c.active_ms + Math.max(0, end_ms - c.running_since), c.id);
+app.post('/api/timer/resume', (req, res) => {
+  const s = sessionOpen();
+  if (!s) return res.status(409).json({ error: 'Aucune session en cours' });
+  if (s.running_since != null) return res.status(409).json({ error: 'La session tourne déjà' });
+  const runningStandalone = openChronos().find(c => c.mode === 'standalone' && c.running_since);
+  if (runningStandalone) {
+    return res.status(409).json({ error: 'Des minuteurs de tâche tournent — stoppe-les d\'abord (leur temps compte déjà dans la journée)' });
   }
+  const now = Date.now();
+  resumeSessionInternal(s, now);
+  const resumed = resumeAutoPaused();
+  res.json({ timer: entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(s.id)), resumed_chronos: resumed });
+});
 
-  const s = getSettings();
-  if (s.notify_enabled) {
-    sendPushAll('⏹️ Session validée !',
-      `${fmtMinutesFr(minutes)} pointées → +${Math.round(minutes)} XP, ${(minutes / 60 * s.hourly_rate).toFixed(2)} 💪`, 'stop-ok')
-      .catch(() => {});
+// ⏸ Pause : le temps actif s'arrête (les pauses ne comptent pas), la session continue.
+// À chaque changement de journée, rollSessionDay() clôture les minutes du jour écoulé.
+app.post('/api/timer/pause', (req, res) => {
+  const s = sessionOpen();
+  if (!s) return res.status(409).json({ error: 'Aucune session en cours' });
+  if (s.running_since == null) return res.status(409).json({ error: 'Session déjà en pause' });
+  const now = Date.now();
+  db.prepare('UPDATE entries SET active_ms=?, running_since=NULL WHERE id=?')
+    .run((s.active_ms || 0) + Math.max(0, now - s.running_since), s.id);
+  const pausedChronos = freezeAttachedChronos(now);
+  markPauseIfIdle(now);
+  const tzo = (req.body || {}).tzOffset;
+  const doneToday = dayMinutesFull(todayStr(typeof tzo === 'number' ? tzo : undefined), now);
+  const sj = getSettings();
+  if (sj.notify_enabled) {
+    sendPushAll('⏸ En pause', `${fmtMinutesFr(doneToday)} pointées aujourd'hui — le gros chrono attend 💤`, 'pause').catch(() => {});
   }
-
   res.json({
-    entry: entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(entry.id)),
-    gained_xp: Math.round(minutes) * XP_PER_MINUTE,
-    gamification: g,
+    timer: entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(s.id)),
     paused_chronos: pausedChronos.length,
+    today: doneToday,
   });
 });
 
@@ -433,9 +524,10 @@ app.post('/api/chronos', (req, res) => {
   }
   let session_started = false;
   if (mode === 'attached') {
-    // Rattaché au gros chrono : s'il ne tourne pas, on le lance
+    // Rattaché au gros chrono : s'il ne tourne pas, on le lance (ou on sort la pause)
     if (!sessionOpen()) { createSession(null, '', tzOffset); session_started = true; }
-  } else if (sessionOpen()) {
+    else if (sessionOpen().running_since == null) { resumeSessionInternal(sessionOpen(), Date.now()); session_started = true; }
+  } else if (sessionRunning()) {
     return res.status(409).json({ error: 'Le gros chrono tourne : rattache la tâche (📌) au lieu d\'un minuteur' });
   }
   const now = Date.now();
@@ -458,7 +550,7 @@ app.post('/api/chronos/fly', (req, res) => {
   if (openChronos().length >= MAX_PARALLEL_CHRONOS) {
     return res.status(409).json({ error: `Max ${MAX_PARALLEL_CHRONOS} chronos en parallèle — stoppe-en un` });
   }
-  const mode = sessionOpen() ? 'attached' : 'standalone';
+  const mode = sessionRunning() ? 'attached' : 'standalone';
   const origin = claimableGap();
   const tInfo = db.prepare('INSERT INTO tasks (title, xp_bonus, created_at) VALUES (?,?,?)')
     .run(String(title).trim().slice(0, 120), 25, Date.now());
@@ -467,10 +559,16 @@ app.post('/api/chronos/fly', (req, res) => {
   const cInfo = db.prepare(`INSERT INTO task_chronos (task_id, mode, start_ms, active_ms, running_since, auto_paused, date)
     VALUES (?,?,?,0,?,0,?)`).run(taskId, mode, start_at, start_at, dateFromMs(start_at, tzOffset));
   clearLastPause();
+  let session_started = !sessionRunning() && mode === 'attached';
+  if (session_started) {
+    // gros chrono en pause (sans créneau libre à récupérer) : on le sort de pause
+    resumeSessionInternal(sessionOpen(), start_at);
+    resumeAutoPaused();
+  }
   res.json({
     task: taskToJson(db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId)),
     chrono: chronoToJson(db.prepare('SELECT * FROM task_chronos WHERE id=?').get(cInfo.lastInsertRowid)),
-    mode, backfilled: !!origin, origin_ms: start_at,
+    mode, backfilled: !!origin, origin_ms: start_at, session_started,
   });
 });
 
@@ -493,13 +591,12 @@ app.post('/api/chronos/:id/pause', (req, res) => {
 app.post('/api/chronos/:id/resume', (req, res) => {
   const c = getChronoOr404(req.params.id, res); if (!c) return;
   if (c.running_since) return res.status(409).json({ error: 'Chrono déjà lancé' });
-  if (c.mode === 'standalone' && sessionOpen()) {
-    return res.status(409).json({ error: 'Le gros chrono tourne : impossible de reprendre un minuteur (double comptage)' });
-  }
   let session_started = false;
-  if (c.mode === 'attached' && !sessionOpen()) {
-    createSession(null, '', (req.body || {}).tzOffset);
-    session_started = true;
+  if (c.mode === 'attached') {
+    if (!sessionOpen()) { createSession(null, '', (req.body || {}).tzOffset); session_started = true; }
+    else if (sessionOpen().running_since == null) { resumeSessionInternal(sessionOpen(), Date.now()); session_started = true; }
+  } else if (sessionRunning()) {
+    return res.status(409).json({ error: 'Le gros chrono tourne : impossible de reprendre un minuteur (double comptage)' });
   }
   const now = Date.now();
   db.prepare('UPDATE task_chronos SET running_since=?, auto_paused=0 WHERE id=?').run(now, c.id);
@@ -580,6 +677,8 @@ app.put('/api/entries/:id', (req, res) => {
 });
 
 app.delete('/api/entries/:id', (req, res) => {
+  const e = db.prepare('SELECT * FROM entries WHERE id=?').get(req.params.id);
+  if (e && e.end_ms === null) freezeAttachedChronos(Date.now()); // on supprime la session ouverte
   db.prepare('DELETE FROM entries WHERE id=?').run(req.params.id);
   res.json({ ok: true, gamification: computeGamification() });
 });
@@ -760,14 +859,17 @@ async function checkReminders() {
     const now = new Date();
     const today = todayStr();
     const nowMs = Date.now();
-    const open = sessionOpen();
+    const open = sessionRunning();
     const doneToday = dayMinutesFull(today, nowMs);
 
-    // 1) Session ouverte depuis longtemps → rappel de stop
-    if (open && (nowMs - open.start_ms) / 60000 >= s.notify_stop_minutes && !kvGet('stop_alert_' + open.id)) {
-      await notifyIfEnabled('⏰ Pense à stopper !',
-        `Ça fait déjà ${fmtMinutesFr((nowMs - open.start_ms) / 60000)} sur cette session. Stoppe pour valider ton XP !`, 'stop-remind');
-      kvSet('stop_alert_' + open.id, '1');
+    // 1) Sans pause depuis longtemps → rappel
+    if (open) {
+      const stretchMin = (nowMs - open.running_since) / 60000;
+      if (stretchMin >= s.notify_stop_minutes && !kvGet(`stop_alert_${open.id}_${open.running_since}`)) {
+        await notifyIfEnabled('⏰ Pense à mettre en pause !',
+          `Ça fait déjà ${fmtMinutesFr(stretchMin)} d'affilée sur cette session. Une petite pause ? 💤`, 'stop-remind');
+        kvSet(`stop_alert_${open.id}_${open.running_since}`, '1');
+      }
     }
     // 2) Objectif du jour atteint
     if (s.daily_goal_minutes > 0 && doneToday >= s.daily_goal_minutes && !kvGet('goal_alert_' + today)) {

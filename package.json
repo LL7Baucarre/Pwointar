@@ -1,7 +1,7 @@
 {
   "name": "pwointar",
-  "version": "1.2.0",
-  "description": "Pointeuse gamifiée — PWA dockerisée avec notifications push et chronos de tâches",
+  "version": "1.3.0",
+  "description": "Pointeuse gamifiée — PWA dockerisée : pauses, scission par jour, chronos de tâches, notifications push",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
