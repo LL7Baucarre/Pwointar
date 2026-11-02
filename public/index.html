@@ -113,7 +113,7 @@
 
       <!-- ===== Onglet : Tâches ===== -->
       <section class="tab hidden" id="tab-tasks">
-        <form class="card form" id="task-form">
+        <form class="card form" id="task-form" novalidate>
           <h3>➕ Nouvelle tâche</h3>
           <input type="text" id="task-title" placeholder="Ex : Refonte du bug #42" required maxlength="120">
           <div class="form-row">
@@ -206,7 +206,7 @@
           </div>
         </div>
 
-        <form class="card form" id="settings-form">
+        <form class="card form" id="settings-form" novalidate>
           <h3>⚙️ Réglages</h3>
           <label>Taux horaire
             <div class="input-unit"><input type="number" id="set-rate" min="0" step="0.5"><span id="set-currency-label">€</span></div>
@@ -233,13 +233,13 @@
           <p class="field-hint">🏦 La semaine va du lundi au dimanche. Chaque semaine dépassée verse le surplus en rattrapage ; une semaine en dessous (où tu as pointé au moins une fois) l'utilise — jamais négatif.</p>
           <label>Seuil « journée active » (pour la streak 🔥)
             <div class="stepper"><button type="button" data-target="set-active" data-step="-5">−</button>
-            <input type="number" id="set-active" min="1" step="5"><span>min</span>
+            <input type="number" id="set-active" min="0" step="5"><span>min</span>
             <button type="button" data-target="set-active" data-step="5">+</button></div>
           </label>
           <button type="submit" class="btn">Enregistrer</button>
         </form>
 
-        <form class="card form" id="manual-form">
+        <form class="card form" id="manual-form" novalidate>
           <h3>✏️ Pointage manuel</h3>
           <div class="form-row">
             <label>Date <input type="date" id="manual-date"></label>

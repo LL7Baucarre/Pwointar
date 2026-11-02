@@ -776,7 +776,7 @@ $('nav').addEventListener('click', (e) => {
 $('task-form').onsubmit = async (e) => {
   e.preventDefault();
   const title = $('task-title').value.trim();
-  if (!title) return;
+  if (!title) { toast('⚠️ Donne un titre à la tâche'); return; }
   try {
     await api('/tasks', { method: 'POST', body: { title, est_minutes: +$('task-est').value, xp_bonus: +$('task-xp').value } });
     $('task-title').value = '';
@@ -814,16 +814,24 @@ $('manual-form').onsubmit = async (e) => {
 
 $('settings-form').onsubmit = async (e) => {
   e.preventDefault();
+  // Form sans validation navigateur : champ vide ou invalide = on garde la valeur actuelle
+  const cur = state.S?.settings || {};
+  const numOr = (el, fb) => {
+    const s = String(el.value).trim();
+    if (!s) return fb;
+    const v = +s;
+    return isNaN(v) ? fb : v;
+  };
   try {
     const r = await api('/settings', {
       method: 'PUT',
       body: {
-        hourly_rate: +$('set-rate').value,
+        hourly_rate: Math.max(0, numOr($('set-rate'), cur.hourly_rate ?? 25)),
         currency: $('set-currency').value,
-        daily_goal_minutes: +$('set-goal').value,
-        weekly_goal_minutes: Math.max(0, +$('set-weekgoal').value || 0),
-        active_day_minutes: Math.max(1, +$('set-active').value),
-        notify_stop_minutes: Math.max(15, +$('set-notify-stop').value || 240),
+        daily_goal_minutes: Math.max(0, numOr($('set-goal'), cur.daily_goal_minutes ?? 480)),
+        weekly_goal_minutes: Math.max(0, numOr($('set-weekgoal'), cur.weekly_goal_minutes ?? 0)),
+        active_day_minutes: Math.max(0, numOr($('set-active'), cur.active_day_minutes ?? 30)),
+        notify_stop_minutes: Math.max(15, numOr($('set-notify-stop'), cur.notify_stop_minutes ?? 240)),
         notify_enabled: $('set-notify-enabled').checked,
       },
     });
