@@ -1012,13 +1012,40 @@ function fmtMinutesFr(min) {
   min = Math.round(min);
   return min >= 60 ? `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')}` : `${min} min`;
 }
-setInterval(checkReminders, 30 * 1000);
+const reminderTimer = setInterval(checkReminders, 30 * 1000);
 
 // Fallback SPA
 app.get(/^\/(?!api\/).*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+// --- Arrêt propre ------------------------------------------------------------
+// Node tournant en PID 1 dans le conteneur ignore SIGTERM tant qu'aucun handler
+// n'est posé → docker le finit au SIGKILL après son délai → corruption possible
+// des pages WAL pendant une écriture (cf. crash-loop du 5 nov). On ferme donc le
+// serveur, puis la base, et on s'en va proprement.
+let shuttingDown = false;
+function cleanShutdown(reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(reminderTimer);
+  console.log(`👋 Arrêt (${reason}) — fermeture du serveur puis de la base…`);
+  server.closeIdleConnections?.(); // coupe immédiatement les keep-alive (ex. cloudflared)
+  server.close(() => { try { db.close(); } catch {} process.exit(0); });
+  setTimeout(() => { try { db.close(); } catch {} process.exit(0); }, 5000).unref(); // garde-fou
+}
+process.on('SIGTERM', () => cleanShutdown('SIGTERM'));
+process.on('SIGINT', () => cleanShutdown('SIGINT'));
+
+// Une promesse rejetée en dehors de tout catch ne doit plus tuer le process (Node ≥ 15)
+process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err));
+
+// Erreurs de routes → JSON plutôt que la page HTML d'Express (l'app reste debout)
+app.use((err, req, res, _next) => {
+  console.error('Erreur route:', err.message);
+  res.status(500).json({ error: 'Erreur serveur', detail: err.message });
+});
+
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`⏰ Pwointar écoute sur http://0.0.0.0:${PORT}`);
 });
