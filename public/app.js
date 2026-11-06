@@ -190,7 +190,7 @@ function tick() {
   if (state.S) {
     const goal = state.S.settings.daily_goal_minutes;
     $('goal-done').textContent = today >= 60 ? fmtDuration(today) : `${Math.round(today)} min`;
-    $('goal-earned').textContent = fmtMoney(today / 60 * state.S.settings.hourly_rate, state.S.settings.currency);
+    $('goal-earned').textContent = fmtMoney(todayLiveMoney(), state.S.settings.currency);
     $('goal-fill').style.width = Math.min(100, goal > 0 ? (today / goal) * 100 : 0) + '%';
     $('stat-today').textContent = fmtDuration(today);
   }
@@ -206,10 +206,10 @@ function tick() {
 }
 
 // Compteur défilant de l'argent gagné aujourd'hui (grille plus fine pour « défiler »)
+// — plafonné à l'objectif de la semaine : atteint, il ne bouge plus
 function updateMoneyCounter() {
   if (!state.S) return;
-  const v = todayLiveMinutes() / 60 * state.S.settings.hourly_rate;
-  $('timer-today').textContent = fmtMoney(v, state.S.settings.currency);
+  $('timer-today').textContent = fmtMoney(todayLiveMoney(), state.S.settings.currency);
 }
 setInterval(() => { if (state.S) updateMoneyCounter(); }, 250);
 
@@ -220,7 +220,7 @@ function renderGoal(S) {
   const done = S.today;
   $('goal-target').textContent = fmtDuration(goal);
   $('goal-done').textContent = done >= 60 ? fmtDuration(done) : `${Math.round(done)} min`;
-  $('goal-earned').textContent = fmtMoney(S.today / 60 * S.settings.hourly_rate, S.settings.currency);
+  $('goal-earned').textContent = fmtMoney(todayLiveMoney(), S.settings.currency);
   const pct = Math.min(100, goal > 0 ? (done / goal) * 100 : 0);
   $('goal-fill').style.width = pct + '%';
 }
@@ -229,6 +229,18 @@ function renderGoal(S) {
 function weekLiveMinutes() {
   if (!state.S) return 0;
   return Math.max(0, (state.S.week_minutes || 0) - (state.S.today || 0) + todayLiveMinutes());
+}
+// 💰 Une fois l'objectif de la semaine atteint, les minutes suivantes ne rapportent
+// plus d'argent : elles filent au 🏦 rattrapage et à l'XP, mais le compteur s'arrête.
+function todayLivePaidMinutes() {
+  const total = todayLiveMinutes();
+  const wg = state.S?.settings.weekly_goal_minutes || 0;
+  if (wg <= 0) return total;
+  const weekBefore = Math.max(0, weekLiveMinutes() - total);
+  return Math.min(total, Math.max(0, wg - weekBefore));
+}
+function todayLiveMoney() {
+  return state.S ? todayLivePaidMinutes() / 60 * state.S.settings.hourly_rate : 0;
 }
 // Barre « objectif de la semaine » : en direct, surplus → rattrapage 🏦
 function renderWeekGoal() {
@@ -242,7 +254,7 @@ function renderWeekGoal() {
   $('week-goal-fill').style.width = Math.min(100, (done / wg) * 100) + '%';
   const surplus = done - wg;
   $('week-rattrapage').textContent = surplus >= 1
-    ? `🏦 +${fmtDuration(surplus)} → rattrapage`
+    ? `🏦 +${fmtDuration(surplus)} → rattrapage · 💰 stoppé`
     : `reste ${fmtDuration(Math.max(0, wg - done))}`;
 }
 

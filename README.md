@@ -33,6 +33,7 @@ Règle ton **objectif hebdomadaire** dans le Profil (0 = désactivé). La semain
 
 - Chaque **semaine terminée** où tu as pointé au moins une fois : le **surplus** (au-delà de l'objectif) est **versé dans la banque de rattrapage** 🏦 ; un **déficit** est retiré de la banque (jamais négatif — les semaines sans aucun pointage ne comptent pas, vacances incluses).
 - La **semaine en cours** n'est pas encore versée : elle s'affiche en direct sous l'objectif du jour (barre dorée + `🏦 +X h → rattrapage` dès que tu dépasses).
+- 💰 **Une fois l'objectif atteint, les minutes suivantes ne rapportent plus d'argent** : le compteur défilant s'arrête, et le surplus n'enrichit plus le total 💰 (l'XP, la streak et le 🏦 continuent). Les semaines d'avant l'activation de l'objectif restent payées à 100 %.
 - La banque s'affiche dans l'onglet **Stats** (« Rattrapage en banque » + surplus de la semaine), et un push 🎯 part la première fois que tu atteins l'objectif de la semaine.
 - Activer l'objectif démarre la banque **cette semaine-là** (l'historique d'avant n'est jamais recompté rétroactivement) ; changer la valeur de l'objectif re-base le calcul sur les semaines suivies.
 
@@ -59,7 +60,7 @@ Quand elles sont actives, le serveur t'envoie automatiquement :
 - **⏰ Rappels de pointage multiples** — une liste d'heures (8 max) réglable dans l'onglet Profil ; à chaque rappel, un push part si tu ne pointes pas à ce moment-là
 - **⏰ Rappel de longue session** — si le chrono tourne sans pause pendant la durée configurée (par défaut 240 min, réglable) : anti-oubli de pause
 - **🎯 Objectif du jour atteint** — dès que tu passes ton quota
-- **🎯 Objectif de la semaine atteint** — la première fois de la semaine ; chaque minute de plus ira au 🏦 rattrapage
+- **🎯 Objectif de la semaine atteint** — la première fois de la semaine ; chaque minute de plus ne rapporte plus d'argent et ira au 🏦 rattrapage
 - **🌙 Journée clôturée** — récap des minutes pointées quand tu clôtures la journée
 - **⏸ Résumé en pause** — minutes du jour + état du gros chrono quand tu mets en pause
 

@@ -195,7 +195,7 @@ function computeGamification() {
     }
   }
 
-  const money = totalMinutesToMoney(stats.total_minutes);
+  const money = totalMoney();
   const xp = Math.round(stats.total_minutes) * XP_PER_MINUTE
     + db.prepare('SELECT COALESCE(SUM(xp_bonus),0) AS s FROM tasks WHERE done=1').get().s;
   const level = levelFromXp(xp || 0);
@@ -245,10 +245,6 @@ function todayStr(tzOffsetMs) {
 function ymd(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-function totalMinutesToMoney(m) {
-  const s = getSettings();
-  return (m / 60) * s.hourly_rate;
-}
 
 function entryToJson(e) {
   const open = e.end_ms === null;
@@ -259,7 +255,7 @@ function entryToJson(e) {
   const j = {
     id: e.id, task_id: e.task_id, note: e.note,
     start_ms: e.start_ms, end_ms: e.end_ms, date: e.date,
-    minutes, open, money: (minutes / 60) * s.hourly_rate,
+    minutes, open, money: (paidMoneyMinutes(e, minutes) / 60) * s.hourly_rate,
   };
   if (open) {
     j.active_ms = e.active_ms ?? null;
@@ -335,6 +331,61 @@ function rattrapageInfo(effectiveToday) {
   }
   info.balance_min = bal;
   return info;
+}
+
+// 💰 Argent : avec un objectif hebdomadaire actif, chaque semaine (lundi→dimanche)
+// suivie depuis l'activation ne paie que jusqu'à l'objectif — une fois atteint, les
+// minutes suivantes ne rapportent plus d'argent (elles continuent de compter pour le
+// temps pointé, l'XP et la banque de rattrapage 🏦). Les semaines d'avant l'activation
+// paient toujours à 100 %.
+function moneyCapConfig() {
+  const s = getSettings();
+  const goal = s.weekly_goal_minutes || 0;
+  const since = kvGet('weekly_goal_since');
+  if (goal <= 0 || !since) return null;
+  return { goal, from: weekRangeOf(since)[0] };
+}
+// null = cette semaine n'est pas plafonnée (objectif absent ou désactivé,
+// ou semaine antérieure à l'activation de l'objectif)
+function moneyCapFor(dateStr) {
+  const cap = moneyCapConfig();
+  if (!cap || weekRangeOf(dateStr)[0] < cap.from) return null;
+  return cap;
+}
+// Budget de la semaine déjà consommé par les entrées clôturées précédant `e`
+function weekPaidBefore(cap, e) {
+  const [wkFrom, wkTo] = weekRangeOf(e.date);
+  if (e.end_ms === null) {
+    // session ouverte : traitée comme la dernière de sa journée
+    return db.prepare('SELECT COALESCE(SUM(minutes),0) AS m FROM entries WHERE end_ms IS NOT NULL AND date >= ? AND date <= ? AND date <= ?')
+      .get(wkFrom, wkTo, e.date).m;
+  }
+  return db.prepare(`
+    SELECT COALESCE(SUM(minutes),0) AS m FROM entries
+    WHERE end_ms IS NOT NULL AND date >= ? AND date <= ?
+      AND (date < ? OR (date = ? AND (start_ms < ? OR (start_ms = ? AND id < ?))))
+  `).get(wkFrom, wkTo, e.date, e.date, e.start_ms, e.start_ms, e.id).m;
+}
+// Minutes d'une entrée qui « rapportent » : 0 au-delà de l'objectif de la semaine
+function paidMoneyMinutes(e, minutes) {
+  const cap = moneyCapFor(e.date);
+  if (!cap) return minutes;
+  return Math.max(0, Math.min(minutes, cap.goal - weekPaidBefore(cap, e)));
+}
+// Argent total cumulé (HUD + badge 💰) : chaque semaine plafonnée ne paie que l'objectif
+function totalMoney() {
+  const s = getSettings();
+  const cap = moneyCapConfig();
+  const rows = db.prepare('SELECT date, COALESCE(SUM(minutes),0) AS m FROM entries WHERE end_ms IS NOT NULL GROUP BY date').all();
+  let minutes = 0;
+  const byWeek = new Map();
+  for (const r of rows) {
+    const wk = weekRangeOf(r.date)[0];
+    if (!cap || wk < cap.from) minutes += r.m;
+    else byWeek.set(wk, (byWeek.get(wk) || 0) + r.m);
+  }
+  if (cap) for (const m of byWeek.values()) minutes += Math.min(m, cap.goal);
+  return (minutes / 60) * s.hourly_rate;
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,7 +1066,7 @@ async function checkReminders() {
       const doneWeek = rangeMinutesFull(wkFrom, wkTo, nowMs);
       if (doneWeek >= wGoal && !kvGet('week_goal_alert_' + wkFrom)) {
         await notifyIfEnabled('🎯 Objectif de la semaine atteint !',
-          `${fmtMinutesFr(doneWeek)} cette semaine — chaque minute de plus ira au 🏦 rattrapage`, 'week-goal');
+          `${fmtMinutesFr(doneWeek)} cette semaine — chaque minute de plus ne rapporte plus d’argent 💰 et file au 🏦 rattrapage`, 'week-goal');
         kvSet('week_goal_alert_' + wkFrom, '1');
       }
     }
