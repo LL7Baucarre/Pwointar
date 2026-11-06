@@ -235,8 +235,9 @@ function getSettings() {
   };
 }
 function todayStr(tzOffsetMs) {
-  if (tzOffsetMs !== undefined) {
-    const d = new Date(Date.now() - tzOffsetMs);
+  if (typeof tzOffsetMs === 'number') {
+    // local = UTC + offset → on ajoute l'offset pour « lire » l'heure locale en UTC
+    const d = new Date(Date.now() + tzOffsetMs);
     return d.toISOString().slice(0, 10);
   }
   return ymd(new Date());
@@ -422,7 +423,7 @@ function chronoToJson(c) {
   };
 }
 function dateFromMs(ms, tzOffset) {
-  if (typeof tzOffset === 'number') return new Date(ms - tzOffset).toISOString().slice(0, 10);
+  if (typeof tzOffset === 'number') return new Date(ms + tzOffset).toISOString().slice(0, 10);
   return ymd(new Date(ms));
 }
 function createSession(taskId, note, tzOffset) {
@@ -736,16 +737,34 @@ app.get('/api/entries', (req, res) => {
   res.json({ entries: rows.map(entryToJson) });
 });
 
+// Normalise « 9:30 » / « 09:30 » / « 09:30:45 » → « 09:30:45 », sinon null
+function normHHMM(t) {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(t || '').trim());
+  if (!m) return null;
+  return `${m[1].padStart(2, '0')}:${m[2]}:${m[3] || '00'}`;
+}
+// Heure locale (date + HH:MM[:SS]) → ms.
+// tzOffset = local − UTC en ms (celui que le navigateur envoie déjà ailleurs).
+// Sans tzOffset : interprétation dans la TZ du serveur (ancien comportement).
+function localWallToMs(date, time, tzOffset) {
+  const t = normHHMM(time);
+  if (!date || !t) return null;
+  if (typeof tzOffset === 'number') return Date.parse(`${date}T${t}Z`) - tzOffset;
+  const ms = new Date(`${date}T${t.slice(0, 5)}`).getTime();
+  return isNaN(ms) ? null : ms;
+}
+
 app.post('/api/entries', (req, res) => {
   const { task_id = null, note = '', date, start, end } = req.body || {};
   if (!date || !start || !end) return res.status(400).json({ error: 'date, start, end requis' });
-  const start_ms = new Date(`${date}T${start}`).getTime();
-  let end_ms = new Date(`${date}T${end}`).getTime();
-  if (isNaN(start_ms) || isNaN(end_ms)) return res.status(400).json({ error: 'heure invalide' });
+  const tzOffset = (req.body || {}).tzOffset;
+  const start_ms = localWallToMs(date, start, tzOffset);
+  let end_ms = localWallToMs(date, end, tzOffset);
+  if (start_ms == null || end_ms == null) return res.status(400).json({ error: 'heure invalide' });
   if (end_ms <= start_ms) end_ms += 24 * 3600 * 1000; // traverse minuit
   const minutes = (end_ms - start_ms) / 60000;
-  const info = db.prepare('INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes) VALUES (?,?,?,?,?,?)')
-    .run(task_id, note, start_ms, end_ms, date, minutes);
+  const info = db.prepare('INSERT INTO entries (task_id, note, start_ms, end_ms, date, minutes, tz_offset) VALUES (?,?,?,?,?,?,?)')
+    .run(task_id, note, start_ms, end_ms, date, minutes, typeof tzOffset === 'number' ? tzOffset : null);
   const g = computeGamification();
   res.json({ entry: entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(info.lastInsertRowid)), gamification: g });
 });
@@ -754,18 +773,24 @@ app.put('/api/entries/:id', (req, res) => {
   const e = db.prepare('SELECT * FROM entries WHERE id=?').get(req.params.id);
   if (!e) return res.status(404).json({ error: 'Introuvable' });
   const { note = e.note, date = e.date, start, end } = req.body || {};
+  const tzOffset = (req.body || {}).tzOffset;
   let start_ms = e.start_ms, end_ms = e.end_ms, minutes = e.minutes;
   if (start && end) {
-    start_ms = new Date(`${date}T${start}`).getTime();
-    end_ms = new Date(`${date}T${end}`).getTime();
-    if (isNaN(start_ms) || isNaN(end_ms)) return res.status(400).json({ error: 'heure invalide' });
+    start_ms = localWallToMs(date, start, tzOffset);
+    end_ms = localWallToMs(date, end, tzOffset);
+    if (start_ms == null || end_ms == null) return res.status(400).json({ error: 'heure invalide' });
     if (end_ms <= start_ms) end_ms += 24 * 3600 * 1000;
     minutes = (end_ms - start_ms) / 60000;
+    db.prepare('UPDATE entries SET note=?, start_ms=?, end_ms=?, date=?, minutes=?, tz_offset=? WHERE id=?')
+      .run(note, start_ms, end_ms, date, minutes, typeof tzOffset === 'number' ? tzOffset : e.tz_offset, e.id);
   } else if (typeof req.body?.minutes === 'number') {
     minutes = req.body.minutes;
+    db.prepare('UPDATE entries SET note=?, date=?, minutes=? WHERE id=?')
+      .run(note, date, minutes, e.id);
+  } else {
+    db.prepare('UPDATE entries SET note=?, date=? WHERE id=?')
+      .run(note, date, e.id);
   }
-  db.prepare('UPDATE entries SET note=?, start_ms=?, end_ms=?, date=?, minutes=? WHERE id=?')
-    .run(note, start_ms, end_ms, date, minutes, e.id);
   const g = computeGamification();
   res.json({ entry: entryToJson(db.prepare('SELECT * FROM entries WHERE id=?').get(e.id)), gamification: g });
 });
@@ -870,9 +895,16 @@ app.put('/api/settings', (req, res) => {
 // --- Stats ------------------------------------------------------------------
 app.get('/api/stats', (req, res) => {
   const days = buildDayStats(30);
-  const byHour = db.prepare(`
-    SELECT CAST(strftime('%H', start_ms/1000, 'unixepoch') AS INTEGER) AS h, SUM(minutes) AS m
-    FROM entries WHERE end_ms IS NOT NULL GROUP BY h ORDER BY h`).all();
+  // Répartition par heure en heure LOCALE du navigateur (tzOffset = local − UTC) ;
+  // une entrée qui connaît son propre tz_offset l'emporte (créée à une autre heure d'été/hiver).
+  const tzReq = req.query.tzOffset !== undefined ? Number(req.query.tzOffset) : undefined;
+  const buckets = new Array(24).fill(0);
+  for (const r of db.prepare('SELECT start_ms, tz_offset, minutes FROM entries WHERE end_ms IS NOT NULL').all()) {
+    const off = typeof r.tz_offset === 'number' ? r.tz_offset : (typeof tzReq === 'number' && !isNaN(tzReq) ? tzReq : 0);
+    const h = Math.floor(((r.start_ms + off) % 86400000) / 3600000);
+    buckets[h < 0 ? h + 24 : h] += r.minutes;
+  }
+  const byHour = buckets.map((m, h) => ({ h, m })).filter(x => x.m > 0);
   const byTask = db.prepare(`
     SELECT label, SUM(m) AS m FROM (
       SELECT COALESCE(t.title, '(sans tâche)') AS label, e.minutes AS m

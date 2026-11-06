@@ -11,7 +11,9 @@ const state = {
   lastTick: 0,
 };
 
-const tzOffsetMs = new Date().getTimezoneOffset() * 60 * 1000 * -1; // MS local - UTC
+// MS local - UTC — recalculé à CHAQUE envoi : une PWA ouverte à travers un changement
+// d'heure (été ↔ hiver) doit partir avec l'offset courant, pas celui du chargement.
+function tzOffset() { return new Date().getTimezoneOffset() * 60 * 1000 * -1; }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,7 +39,7 @@ function fmtDateHuman(dateStr) {
 function fmtTime(ms) {
   return new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 }
-function todayLocal() { return new Date(Date.now() - tzOffsetMs).toISOString().slice(0, 10); }
+function todayLocal() { return new Date(Date.now() + tzOffset()).toISOString().slice(0, 10); }
 function chronoElapsedMs(c) {
   // temps actif accumulé + temps écoulé depuis la dernière reprise
   return (c.active_ms || 0) + (c.running ? Math.max(0, Date.now() - c.running_since) : 0);
@@ -365,7 +367,7 @@ function renderStats(S) {
 }
 
 async function fetchStats() {
-  try { return await api('/stats'); } catch { return null; }
+  try { return await api('/stats?tzOffset=' + tzOffset()); } catch { return null; }
 }
 
 function renderDayChart(days) {
@@ -375,7 +377,7 @@ function renderDayChart(days) {
   const map = new Map(days.map(d => [d.date, d.m]));
   const arr = [];
   for (let i = 13; i >= 0; i--) {
-    const d = new Date(Date.now() - tzOffsetMs - i * 86400000);
+    const d = new Date(Date.now() + tzOffset() - i * 86400000);
     const s = d.toISOString().slice(0, 10);
     arr.push({ date: s, m: map.get(s) || 0 });
   }
@@ -474,7 +476,7 @@ function renderEntries(S) {
 // ---------------------------------------------------------------------------
 async function startTimer(taskId = null) {
   try {
-    const r = await api('/timer/start', { method: 'POST', body: { task_id: taskId, tzOffset: tzOffsetMs } });
+    const r = await api('/timer/start', { method: 'POST', body: { task_id: taskId, tzOffset: tzOffset() } });
     state.timer = r.timer;
     if (taskId) {
       const task = state.S.tasks.find(x => x.id === taskId);
@@ -490,7 +492,7 @@ async function startTimer(taskId = null) {
 
 async function pauseTimer() {
   try {
-    const r = await api('/timer/pause', { method: 'POST', body: { tzOffset: tzOffsetMs } });
+    const r = await api('/timer/pause', { method: 'POST', body: { tzOffset: tzOffset() } });
     if (r.timer) state.timer = r.timer;
     toast(`⏸ Pause — ${fmtDuration(r.today ?? 0)} pointées aujourd'hui 💤`);
     if (r.paused_chronos) toast(`⏸ ${r.paused_chronos} chrono(s) rattaché(s) en pause aussi`);
@@ -514,7 +516,7 @@ async function closeDay() {
   const mins = todayLiveMinutes();
   if (!confirm(`Clôturer la journée ? ${fmtDuration(mins)} pointées aujourd'hui — le chrono s'arrêtera et repartira de zéro à la prochaine reprise.`)) return;
   try {
-    const r = await api('/timer/close', { method: 'POST', body: { tzOffset: tzOffsetMs } });
+    const r = await api('/timer/close', { method: 'POST', body: { tzOffset: tzOffset() } });
     state.timer = null;
     toast(`🌙 Journée clôturée — ${fmtDuration(r.today ?? mins)} pointées aujourd'hui 👏`);
     if (r.paused_chronos) toast(`⏸ ${r.paused_chronos} chrono(s) rattaché(s) en pause aussi`);
@@ -545,7 +547,7 @@ $('qa-manual').onclick = () => {
 // ---------------------------------------------------------------------------
 async function startChrono(taskId, mode) {
   try {
-    const r = await api('/chronos', { method: 'POST', body: { task_id: taskId, mode, tzOffset: tzOffsetMs } });
+    const r = await api('/chronos', { method: 'POST', body: { task_id: taskId, mode, tzOffset: tzOffset() } });
     if (r.session_started) toast('▶️ Gros chrono lancé automatiquement');
     if (r.resumed_chronos) toast(`⏱️ ${r.resumed_chronos} chrono(s) rattaché(s) repris`);
     toast(r.chrono.mode === 'attached'
@@ -568,7 +570,7 @@ async function chronoPause(c) {
 
 async function chronoResume(c) {
   try {
-    const r = await api(`/chronos/${c.id}/resume`, { method: 'POST', body: { tzOffset: tzOffsetMs } });
+    const r = await api(`/chronos/${c.id}/resume`, { method: 'POST', body: { tzOffset: tzOffset() } });
     if (r.session_started) toast('▶️ Gros chrono relancé automatiquement');
     await refresh();
   } catch (err) { toast('⚠️ ' + err.message); }
@@ -746,7 +748,7 @@ $('chrono-fly-box').addEventListener('submit', async (e) => {
   const title = $('chrono-fly-title').value.trim();
   if (!title) { toast('⚠️ Donne un nom à la tâche'); return; }
   try {
-    const r = await api('/chronos/fly', { method: 'POST', body: { title, tzOffset: tzOffsetMs } });
+    const r = await api('/chronos/fly', { method: 'POST', body: { title, tzOffset: tzOffset() } });
     $('chrono-fly-title').value = '';
     $('chrono-fly-box').classList.add('hidden');
     toast(r.backfilled
@@ -801,6 +803,7 @@ $('manual-form').onsubmit = async (e) => {
     end: $('manual-end').value,
     note: $('manual-note').value.trim(),
     task_id: $('manual-task').value ? Number($('manual-task').value) : null,
+    tzOffset: tzOffset(), // l'heure saisie est locale au navigateur : le serveur l'interprète avec notre offset
   };
   if (!body.date || !body.start || !body.end) { toast('⚠️ Remplis date + heures'); return; }
   try {
@@ -981,7 +984,7 @@ let refreshing = false;
 async function refresh() {
   if (refreshing) return; refreshing = true;
   try {
-    const S = await api('/bootstrap?tzOffset=' + tzOffsetMs);
+    const S = await api('/bootstrap?tzOffset=' + tzOffset());
     state.timer = S.timer || null; // le serveur fait foi (gère pauses & scission par jour)
     state.S = S;
     if (S.push?.vapid_public) vapidPublic = S.push.vapid_public;
