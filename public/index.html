@@ -24,7 +24,7 @@
         <div class="hud-chip streak" id="hud-streak" title="Série de jours actifs">
           <span class="hud-icon">🔥</span><span id="hud-streak-num">0</span>
         </div>
-        <div class="hud-chip coins" id="hud-money" title="Argent cumulé">
+        <div class="hud-chip coins" id="hud-money" title="Argent cumulé — ce qui est en train d'être gagné inclus">
           <span class="hud-icon">💰</span><span id="hud-money-num">0 €</span>
         </div>
       </div>
@@ -57,6 +57,17 @@
             <div class="goal-line sub">
               <span id="week-goal-done">0 h 00</span>
               <span id="week-rattrapage">🏦 +0 h 00</span>
+            </div>
+          </div>
+          <div class="goal-sep hidden" id="freedom-block">
+            <div class="goal-line">
+              <span>🕊️ Liberté financière</span>
+              <span id="freedom-pct">0 %</span>
+            </div>
+            <div class="goal-bar"><div id="freedom-fill"></div></div>
+            <div class="goal-line sub">
+              <span id="freedom-done">0,00 €</span>
+              <span id="freedom-left">—</span>
             </div>
           </div>
         </div>
@@ -231,6 +242,12 @@
             <button type="button" data-target="set-weekgoal" data-step="60">+</button></div>
           </label>
           <p class="field-hint">🏦 La semaine va du lundi au dimanche. Chaque semaine dépassée verse le surplus en rattrapage ; une semaine en dessous (où tu as pointé au moins une fois) l'utilise — jamais négatif. 💰 Une fois l'objectif atteint, les minutes suivantes ne rapportent plus d'argent (l'XP et le 🏦 continuent).</p>
+          <label>Seuil de liberté financière 🕊️ (0 = désactivé)
+            <div class="stepper"><button type="button" data-target="set-freedom" data-step="-500">−</button>
+            <input type="number" id="set-freedom" min="0" step="100"><span id="set-freedom-label">€</span>
+            <button type="button" data-target="set-freedom" data-step="500">+</button></div>
+          </label>
+          <p class="field-hint">🕊️ Le cumul 💰 que tu veux atteindre (session en cours incluse). Au franchissement : célébration 🎉, push + badge 🕊️. Barre visible dans l'onglet Pointeuse.</p>
           <label>Seuil « journée active » (pour la streak 🔥)
             <div class="stepper"><button type="button" data-target="set-active" data-step="-5">−</button>
             <input type="number" id="set-active" min="0" step="5"><span>min</span>

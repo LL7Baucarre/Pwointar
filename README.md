@@ -19,13 +19,13 @@ Puis ouvre **http://localhost:3000** (sur ton PC) ou **http://\<ip-de-ton-PC\>:3
 
 | Zone | Ce que tu peux faire |
 |---|---|
-| ⏱️ **Pointeuse** | Gros bouton pointer → **⏸ PAUSE / ▶ REPRENDRE**, timer géant, **compteur d'argent défilant** dans l'anneau, objectif du jour, objectif de la semaine 🏦, les pauses ne pointent pas |
+| ⏱️ **Pointeuse** | Gros bouton pointer → **⏸ PAUSE / ▶ REPRENDRE**, timer géant, **compteur d'argent défilant** dans l'anneau, objectif du jour, objectif de la semaine 🏦, seuil de liberté financière 🕊️, les pauses ne pointent pas |
 | 🌙 **Clôturer la journée** | Quand le chrono est en pause, le bouton **🌙 Clôturer la journée** termine la session : les minutes du jour sont figées (streak 🔥 et XP validés tout de suite) et la prochaine reprise repart de zéro |
 | 🗓️ **Journées auto** | Dès que tu changes de jour, la session est **scindée automatiquement** : les minutes passées sont clôturées pour ce jour-là, le gros chrono continue sur le nouveau (un week-end en pause = aucune ligne fantôme) |
-| ⏳ **Chronos de tâches** | Lance jusqu'à **3 chronos en parallèle** sous le gros chrono : 📌 rattaché au gros chrono, ou ⏱️ minuteur autonome. Pause/reprise par chrono, création de tâche ✨ à la volée |
+| ⏳ **Chronos de tâches** | Lance jusqu'à **3 chronos en parallèle** sous le gros chrono : 📌 rattaché au gros chrono, ou ⏱️ minuteur autonome. Pause/reprise par chrono, création de tâche ✨ à la volée, **argent 💰 affiché par chrono en direct** |
 | 📋 **Tâches** | Ajouter des tâches avec estimation et bonus XP, les cocher pour gagner l'XP, bouton ▶ pour démarrer un chrono directement |
 | 📊 **Stats** | Aujourd'hui / semaine (lundi → dimanche) / 30 jours / total, **banque de rattrapage 🏦**, graphique des 14 derniers jours, répartition par heure, temps par tâche |
-| 😀 **Profil** | Niveau, badges, réglages (taux horaire 💶, devise, objectif quotidien, **objectif hebdomadaire**, seuil de streak), pointage manuel, historique |
+| 😀 **Profil** | Niveau, badges, réglages (taux horaire 💶, devise, objectif quotidien, **objectif hebdomadaire**, **seuil de liberté financière 🕊️**, seuil de streak), pointage manuel, historique |
 
 ### 🏦 Rattrapage — comment ça marche
 
@@ -37,12 +37,22 @@ Règle ton **objectif hebdomadaire** dans le Profil (0 = désactivé). La semain
 - La banque s'affiche dans l'onglet **Stats** (« Rattrapage en banque » + surplus de la semaine), et un push 🎯 part la première fois que tu atteins l'objectif de la semaine.
 - Activer l'objectif démarre la banque **cette semaine-là** (l'historique d'avant n'est jamais recompté rétroactivement) ; changer la valeur de l'objectif re-base le calcul sur les semaines suivies.
 
+### 🕊️ Liberté financière — comment ça marche
+
+Règle ton **seuil de liberté** dans le Profil (0 = désactivé) : le cumul 💰 auquel tu considères être libre, dans ta devise.
+
+- Sous l'objectif du jour, une **barre dorée 🕊️** avance en direct : cumul (session en cours et minuteurs inclus), % et ce qu'il reste. Le HUD 💰 en haut suit le même cumul à la seconde.
+- **Au franchissement** : confettis 🎉 + toast dans l'app, un **push 🕊️** (« Liberté financière atteinte ! ») et le badge **🕊️ Liberté !**
+- Le seuil ne se franchit qu'avec de « l'argent réel » : si l'objectif hebdo est actif, une fois atteint les minutes au-delà ne rapportent plus, donc le cumul 💰 ne grimpe plus vers la liberté 🕊️.
+- Le seuil se règle à la hausse quand tu veux viser le palier suivant (chaque valeur déclenche sa propre célébration).
+
 ### 📌 Chronos de tâches — comment ça marche
 
 - **📌 Rattacher** : le chrono de la tâche se « branche » sur le gros chrono. Son temps vient de la session en cours (si celle-ci est mise en pause ou s'arrête, le chrono passe en ⏸ pause automatique ; il reprend avec le gros chrono). Si le gros chrono ne tourne pas ou dort en pause, il est **(re)lancé automatiquement**. Ce temps ne se cumule pas deux fois : il fait partie de la session.
 - **⏱️ Minuteur** : chronomètre autonome pour une tâche, utilisable quand le gros chrono ne tourne pas. À l'arrêt, il crée un **vrai pointage** (compte dans la journée, l'XP et l'argent).
 - Jusqu'à **3 chronos actifs en même temps**, chacun mettables en pause (⏸) et reprenables (▶) individuellement.
-- **✨ Tâche à la volée** : crée une tâche imprévue et démarre son chrono aussitôt — si tu avais mis ton travail **en pause** et que rien ne tournait depuis, le chrono remonte à la dernière pause pour ne rien perdre.
+- **✨ Tâche à la volée** : crée une tâche imprévue et démarre son chrono aussitôt — si tu avais mis ton travail **en pause** et que rien ne tournait depuis, le chrono remonte à la dernière pause pour ne rien perdre. Elle annonce tout de suite **ce qu'elle rapporte** : tarif horaire 💰, et combien elle a **déjà gagné** si le temps remonté existe.
+- **💰 Argent par chrono** : chaque chrono affiche en direct son cumul 🕐 + 💰 (l'heure d'à côté). À l'arrêt d'un minuteur, le toast annonce le montant exact du pointage ; les chronos rattachés affichent leur part du temps de la session.
 - Le bouton ▶️ sur une tâche (onglet 📋) lance le bon mode tout seul : rattaché si le gros chrono tourne, sinon minuteur.
 - Le temps rattaché est reporté dans les stats **« Temps par tâche »**.
 
@@ -61,6 +71,7 @@ Quand elles sont actives, le serveur t'envoie automatiquement :
 - **⏰ Rappel de longue session** — si le chrono tourne sans pause pendant la durée configurée (par défaut 240 min, réglable) : anti-oubli de pause
 - **🎯 Objectif du jour atteint** — dès que tu passes ton quota
 - **🎯 Objectif de la semaine atteint** — la première fois de la semaine ; chaque minute de plus ne rapporte plus d'argent et ira au 🏦 rattrapage
+- **🕊️ Liberté financière** — la première fois que ton cumul 💰 franchit le seuil réglé dans le Profil
 - **🌙 Journée clôturée** — récap des minutes pointées quand tu clôtures la journée
 - **⏸ Résumé en pause** — minutes du jour + état du gros chrono quand tu mets en pause
 

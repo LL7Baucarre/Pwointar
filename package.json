@@ -1,7 +1,7 @@
 {
   "name": "pwointar",
-  "version": "1.4.0",
-  "description": "Pointeuse gamifiée — PWA dockerisée : pauses, journées clôturables 🌙, objectif hebdo + rattrapage 🏦, chronos de tâches, notifications push",
+  "version": "1.5.0",
+  "description": "Pointeuse gamifiée — PWA dockerisée : pauses, journées clôturables 🌙, objectif hebdo + rattrapage 🏦, seuil de liberté financière 🕊️, chronos de tâches qui affichent l'argent 💰, notifications push",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

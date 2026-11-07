@@ -9,6 +9,8 @@ const state = {
   chronoTaskId: null,    // tâche choisie dans le sélecteur de chrono
   chronoTaskOptions: [], // tâches proposées dans le sélecteur
   lastTick: 0,
+  moneySnapshotToday: 0, // 💰 argent du jour vu au dernier bootstrap (base du cumul live)
+  freedomGoal: null,     // 🕊️ seuil déjà célébré (pour ne pas re-confettier à chaque tick)
 };
 
 // MS local - UTC — recalculé à CHAQUE envoi : une PWA ouverte à travers un changement
@@ -112,7 +114,7 @@ function gamifyDiff(g) {
       hundred_hours: '💯 Centurion !', streak_3: '🔥 Streak x3 !', streak_7: '🌋 Streak x7 !',
       streak_30: '🏆 Streak 30 jours !', deep_work: '🧠 Deep work !', early_bird: '🐓 Lève-tôt !',
       night_owl: '🦉 Oiseau de nuit !', taskmaster_5: '✅ 5 tâches done !', taskmaster_25: '🗂️ 25 tâches done !',
-      money_1k: '💰 1 000 € !', marathon: '🏃 Marathon (8h/jour) !',
+      money_1k: '💰 1 000 € !', freedom: '🕊️ Liberté financière !', marathon: '🏃 Marathon (8h/jour) !',
     };
     toast(names[k] || '🏅 Nouveau badge !', 'gold');
   });
@@ -195,14 +197,20 @@ function tick() {
     $('stat-today').textContent = fmtDuration(today);
   }
   renderWeekGoal();
-  // horloges des chronos actifs
+  renderFreedom();
+  // horloges (et 💰) des chronos actifs
   for (const c of state.chronos) {
     const t1 = $('chrono-time-' + c.id);
     if (t1) t1.textContent = fmtClock(chronoElapsedMs(c));
     const t2 = $('task-chrono-time-' + c.id);
     if (t2) t2.textContent = fmtClock(chronoElapsedMs(c));
+    const m1 = $('chrono-money-' + c.id);
+    if (m1) m1.textContent = fmtMoney(chronoMoney(c), state.S?.settings.currency);
   }
   updateMoneyCounter();
+  // HUD 💰 en continu : cumul + ce qui se gagne en ce moment
+  const hm = $('hud-money-num');
+  if (hm && state.S) hm.textContent = fmtMoney(freedomLiveMoney(), state.S.settings.currency);
 }
 
 // Compteur défilant de l'argent gagné aujourd'hui (grille plus fine pour « défiler »)
@@ -241,6 +249,47 @@ function todayLivePaidMinutes() {
 }
 function todayLiveMoney() {
   return state.S ? todayLivePaidMinutes() / 60 * state.S.settings.hourly_rate : 0;
+}
+// 💰 Cumul live 🕊️ : argent fermé côté serveur + ce qui a été gagné depuis le
+// dernier bootstrap (l'anneau et la barre 🕊️ avancent à la seconde)
+function freedomLiveMoney() {
+  if (!state.S) return 0;
+  const gainedSinceSync = todayLiveMoney() - (state.moneySnapshotToday || 0);
+  return Math.max(0, (state.S.gamification.money || 0) + gainedSinceSync);
+}
+// 💰 Argent attribué à un chrono, en direct : ses minutes plafonnées au temps « payé »
+// du jour (objectif hebdo atteint → plus rien ne rapporte). Rattaché = part du gros chrono.
+function chronoMoney(c) {
+  if (!state.S) return 0;
+  const min = Math.min(chronoElapsedMs(c) / 60000, todayLivePaidMinutes());
+  return (min / 60) * state.S.settings.hourly_rate;
+}
+// 🕊️ Seuil de liberté financière : barre qui avance avec le cumul, célébration au franchissement
+function renderFreedom() {
+  if (!state.S) return;
+  const goal = state.S.settings.freedom_amount || 0;
+  const block = $('freedom-block');
+  if (!block) return;
+  block.classList.toggle('hidden', goal <= 0);
+  if (goal <= 0) return;
+  const money = freedomLiveMoney();
+  const reached = money >= goal;
+  const pct = Math.min(100, (money / goal) * 100);
+  $('freedom-pct').textContent = reached ? '🎉 100 %' : `${Math.floor(pct)} %`;
+  $('freedom-fill').style.width = pct + '%';
+  $('freedom-done').textContent = fmtMoney(money, state.S.settings.currency);
+  $('freedom-left').textContent = reached
+    ? '🕊️ Seuil atteint !'
+    : `reste ${fmtMoney(goal - money, state.S.settings.currency)}`;
+  block.classList.toggle('reached', reached);
+  // célébration une seule fois par valeur de seuil (montée du seuil → re-parti)
+  if (reached && state.freedomGoal !== goal) {
+    state.freedomGoal = goal;
+    toast('🕊️ SEUIL DE LIBERTÉ ATTEINT !', 'gold');
+    confetti(80);
+  } else if (!reached && state.freedomGoal === goal) {
+    state.freedomGoal = null;
+  }
 }
 // Barre « objectif de la semaine » : en direct, surplus → rattrapage 🏦
 function renderWeekGoal() {
@@ -434,10 +483,13 @@ function renderSettings(settings, g) {
   $('set-currency').value = settings.currency;
   $('set-goal').value = settings.daily_goal_minutes;
   $('set-weekgoal').value = settings.weekly_goal_minutes ?? 0;
+  $('set-freedom').value = settings.freedom_amount ?? 0;
   $('set-active').value = settings.active_day_minutes;
   $('set-notify-stop').value = settings.notify_stop_minutes;
   $('set-notify-enabled').checked = !!settings.notify_enabled;
-  $('set-currency-label').textContent = currencySymbol(settings.currency);
+  const sym = currencySymbol(settings.currency);
+  $('set-currency-label').textContent = sym;
+  $('set-freedom-label').textContent = sym;
   const xpToNext = g.next_level_xp - g.xp_total;
   $('profile-level-circle').textContent = g.level;
   $('profile-xp').textContent = `${g.xp_total} XP · encore ${xpToNext} XP pour le niveau ${g.level + 1}`;
@@ -591,13 +643,14 @@ async function chronoResume(c) {
 async function chronoStop(c) {
   try {
     const r = await api(`/chronos/${c.id}/stop`, { method: 'POST' });
+    const cur = state.S?.settings.currency || 'EUR';
     if (r.entry) {
-      toast(`⏹️ « ${r.chrono.task_title} » : ${fmtDuration(r.entry.minutes)} — +${r.gained_xp} XP 💰`, 'gold');
-      if (r.gamification) gamifyDiff(r.gamification);
-      confetti(15);
+      toast(`⏹️ « ${r.chrono.task_title} » : ${fmtDuration(r.entry.minutes)} → ${fmtMoney(r.entry.money, cur)} 💰 +${r.gained_xp} XP`, 'gold');
     } else {
-      toast(`⏹️ « ${r.chrono.task_title} » — ${fmtDuration(r.chrono.elapsed_ms / 60000)} rattachées ✅`);
+      toast(`⏹️ « ${r.chrono.task_title} » — ${fmtDuration(r.chrono.elapsed_ms / 60000)} rattachées ✅ · ${fmtMoney(r.chrono.money || 0, cur)} 💰`);
     }
+    if (r.gamification) gamifyDiff(r.gamification);
+    confetti(15);
     await refresh();
   } catch (err) { toast('⚠️ ' + err.message); }
 }
@@ -627,7 +680,10 @@ function renderChronos(S) {
           <div class="c-title">${esc(c.task_title)}</div>
           <div class="c-badges">${badge}${c.auto_paused ? '<span class="c-badge auto">⏸ auto</span>' : ''}</div>
         </div>
-        <span class="c-time" id="chrono-time-${c.id}">${fmtClock(chronoElapsedMs(c))}</span>`;
+        <div class="c-right">
+          <span class="c-time" id="chrono-time-${c.id}">${fmtClock(chronoElapsedMs(c))}</span>
+          <span class="c-money" id="chrono-money-${c.id}">${fmtMoney(chronoMoney(c), state.S?.settings.currency)}</span>
+        </div>`;
       const pauseBtn = document.createElement('button');
       pauseBtn.className = 'icon-btn';
       pauseBtn.textContent = c.running ? '⏸' : '▶';
@@ -657,7 +713,10 @@ function renderChronos(S) {
           ? '<span class="c-badge attached">📌 rattaché</span>'
           : '<span class="c-badge standalone">⏱️ minuteur</span>'}</div>
       </div>
-      <span class="c-time">${fmtDuration(c.minutes)}</span>`;
+      <div class="c-right">
+        <span class="c-time">${fmtDuration(c.minutes)}</span>
+        <span class="c-money">${fmtMoney(c.money || 0, state.S?.settings.currency)}</span>
+      </div>`;
     const del = document.createElement('button');
     del.className = 'icon-btn';
     del.textContent = '🗑️';
@@ -763,9 +822,11 @@ $('chrono-fly-box').addEventListener('submit', async (e) => {
     const r = await api('/chronos/fly', { method: 'POST', body: { title, tzOffset: tzOffset() } });
     $('chrono-fly-title').value = '';
     $('chrono-fly-box').classList.add('hidden');
+    const cur = state.S?.settings.currency || 'EUR';
+    const earned = r.chrono?.money || 0;
     toast(r.backfilled
-      ? `✨ « ${r.task.title} » créée — comptée dès ${fmtTime(r.origin_ms)}`
-      : `✨ « ${r.task.title} » créée — chrono ${r.mode === 'attached' ? 'rattaché 📌' : 'lancé ⏱️'}`);
+      ? `✨ « ${r.task.title} » créée — comptée dès ${fmtTime(r.origin_ms)}, déjà ${fmtMoney(earned, cur)} 💰`
+      : `✨ « ${r.task.title} » créée — chrono ${r.mode === 'attached' ? 'rattaché 📌' : 'lancé ⏱️'} : ${fmtMoney(state.S?.settings.hourly_rate || 0, cur)}/h 💰`);
     await refresh();
   } catch (err) { toast('⚠️ ' + err.message); }
 });
@@ -845,6 +906,7 @@ $('settings-form').onsubmit = async (e) => {
         currency: $('set-currency').value,
         daily_goal_minutes: Math.max(0, numOr($('set-goal'), cur.daily_goal_minutes ?? 480)),
         weekly_goal_minutes: Math.max(0, numOr($('set-weekgoal'), cur.weekly_goal_minutes ?? 0)),
+        freedom_amount: Math.max(0, numOr($('set-freedom'), cur.freedom_amount ?? 0)),
         active_day_minutes: Math.max(0, numOr($('set-active'), cur.active_day_minutes ?? 30)),
         notify_stop_minutes: Math.max(15, numOr($('set-notify-stop'), cur.notify_stop_minutes ?? 240)),
         notify_enabled: $('set-notify-enabled').checked,
@@ -856,7 +918,11 @@ $('settings-form').onsubmit = async (e) => {
   } catch (err) { toast('❌ ' + err.message); }
 };
 
-$('set-currency').onchange = () => $('set-currency-label').textContent = currencySymbol($('set-currency').value);
+$('set-currency').onchange = () => {
+  const sym = currencySymbol($('set-currency').value);
+  $('set-currency-label').textContent = sym;
+  $('set-freedom-label').textContent = sym;
+};
 
 // ---------------------------------------------------------------------------
 // Rappels de pointage multiples
@@ -999,6 +1065,7 @@ async function refresh() {
     const S = await api('/bootstrap?tzOffset=' + tzOffset());
     state.timer = S.timer || null; // le serveur fait foi (gère pauses & scission par jour)
     state.S = S;
+    state.moneySnapshotToday = todayLiveMoney(); // base du cumul live 💰 / 🕊️
     if (S.push?.vapid_public) vapidPublic = S.push.vapid_public;
     renderAll(S);
   } catch (err) {

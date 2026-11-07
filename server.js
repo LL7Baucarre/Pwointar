@@ -87,6 +87,8 @@ addColumn('settings', 'notify_enabled', 'INTEGER NOT NULL DEFAULT 1');
 addColumn('settings', 'notify_stop_minutes', 'INTEGER NOT NULL DEFAULT 240');
 addColumn('settings', 'daily_remind', "TEXT NOT NULL DEFAULT '09:00'");
 addColumn('settings', 'weekly_goal_minutes', 'INTEGER NOT NULL DEFAULT 0');
+// 🕊️ Seuil de liberté financière : cumul 💰 à atteindre (0 = désactivé)
+addColumn('settings', 'freedom_amount', 'REAL NOT NULL DEFAULT 0');
 
 // Pause du gros chrono : temps actif accumulé + moment de la reprise en cours.
 // (NULL = mode hérité « tourne depuis start_ms »)
@@ -157,6 +159,7 @@ const BADGES = [
   { key: 'taskmaster_5',    icon: '✅', name: 'Faiseur de tâches',    desc: 'Terminer 5 tâches' },
   { key: 'taskmaster_25',   icon: '🗂️', name: 'Grand chef',          desc: 'Terminer 25 tâches' },
   { key: 'money_1k',        icon: '💰', name: 'Premier millier',      desc: '1 000 € cumulés' },
+  { key: 'freedom',         icon: '🕊️', name: 'Liberté !',            desc: 'Franchir ton seuil de liberté financière' },
   { key: 'marathon',        icon: '🏃', name: 'Marathon',             desc: '8 h pointées en un jour' },
 ];
 
@@ -195,7 +198,9 @@ function computeGamification() {
     }
   }
 
-  const money = totalMoney();
+  const money = totalMoney();       // clôturé (badges, enregistré noir sur blanc)
+  const moneyLive = totalMoneyLive(); // HUD 💰 + seuil de liberté 🕊️ (session en cours incluse)
+  const freedomGoal = getSettings().freedom_amount || 0;
   const xp = Math.round(stats.total_minutes) * XP_PER_MINUTE
     + db.prepare('SELECT COALESCE(SUM(xp_bonus),0) AS s FROM tasks WHERE done=1').get().s;
   const level = levelFromXp(xp || 0);
@@ -214,11 +219,12 @@ function computeGamification() {
     taskmaster_5:   () => total_tasks_done >= 5,
     taskmaster_25:  () => total_tasks_done >= 25,
     money_1k:       () => money >= 1000,
+    freedom:        () => freedomGoal > 0 && money >= freedomGoal,
     marathon:       () => days.some(d => d.m >= 480),
   };
   const earned = BADGES.filter(b => { try { return checkers[b.key](); } catch { return false; } });
 
-  return { xp, level, xp_total: xp, next_level_xp: levelXpThreshold(level + 1), current_level_xp: levelXpThreshold(level), streak, total_tasks_done, money, badges: earned.map(b => b.key) };
+  return { xp, level, xp_total: xp, next_level_xp: levelXpThreshold(level + 1), current_level_xp: levelXpThreshold(level), streak, total_tasks_done, money: moneyLive, badges: earned.map(b => b.key) };
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +236,7 @@ function getSettings() {
     hourly_rate: s.hourly_rate, currency: s.currency,
     daily_goal_minutes: s.daily_goal_minutes, active_day_minutes: s.active_day_minutes,
     weekly_goal_minutes: s.weekly_goal_minutes ?? 0,
+    freedom_amount: s.freedom_amount ?? 0,
     notify_enabled: !!s.notify_enabled, notify_stop_minutes: s.notify_stop_minutes,
     daily_remind: s.daily_remind || '',
   };
@@ -387,6 +394,33 @@ function totalMoney() {
   if (cap) for (const m of byWeek.values()) minutes += Math.min(m, cap.goal);
   return (minutes / 60) * s.hourly_rate;
 }
+// Entrée fictive (jamais écrite en base) pour appliquer le plafond hebdo à du temps
+// encore « en train d'être gagné » (session ouverte, minuteurs ouverts)
+function pseudoEntry(dateStr, startMs) {
+  return { date: dateStr, start_ms: startMs, end_ms: null, id: -1 };
+}
+// 💰 Argent live : cumul clôturé + ce qui est en train d'être gagné tout de suite
+// (session ouverte + minuteurs autonomes ouverts). Sert au HUD 💰, au compteur et
+// au seuil de liberté 🕊️. Les chrono rattachés ne comptent pas à part : leur temps
+// est déjà celui de la session.
+function totalMoneyLive(now = Date.now()) {
+  const s = getSettings();
+  let money = totalMoney();
+  const open = sessionOpen();
+  if (open) money += (paidMoneyMinutes(open, sessionElapsedMin(open, now)) / 60) * s.hourly_rate;
+  for (const c of openChronos()) {
+    if (c.mode !== 'standalone') continue;
+    const j = pseudoEntry(c.date, c.running_since ?? c.start_ms);
+    money += (paidMoneyMinutes(j, chronoActiveMs(c, now) / 60000) / 60) * s.hourly_rate;
+  }
+  return money;
+}
+// Montant formaté pour les pushs (Intl complet disponible sous Node ≥ 13)
+function fmtMoneyFr(v, currency = 'EUR') {
+  try {
+    return new Intl.NumberFormat('fr-FR', { style: 'currency', currency, maximumFractionDigits: 2 }).format(v);
+  } catch { return `${Number(v).toFixed(2)} ${currency}`; }
+}
 
 // ---------------------------------------------------------------------------
 // Chronos de tâches (rattachés au gros chrono ou minuteurs autonomes)
@@ -463,6 +497,9 @@ function chronoActiveMs(c, now = Date.now()) {
 }
 function chronoToJson(c) {
   const t = c.task_id ? db.prepare('SELECT title FROM tasks WHERE id=?').get(c.task_id) : null;
+  // 💰 argent attribué au chrono : ses minutes plafonnées par l'objectif hebdo
+  // (pour un chrono rattaché, c'est une part du temps de la session, pas un en plus)
+  const money = (paidMoneyMinutes(pseudoEntry(c.date, c.running_since ?? c.start_ms), chronoActiveMs(c) / 60000) / 60) * getSettings().hourly_rate;
   return {
     id: c.id, task_id: c.task_id,
     task_title: t ? t.title : '(tâche supprimée)',
@@ -471,6 +508,7 @@ function chronoToJson(c) {
     running: !!c.running_since, running_since: c.running_since || null,
     auto_paused: !!c.auto_paused,
     elapsed_ms: chronoActiveMs(c),
+    money,
   };
 }
 function dateFromMs(ms, tzOffset) {
@@ -542,12 +580,23 @@ app.get('/api/bootstrap', (req, res) => {
   const rattrapage = rattrapageInfo(effectiveToday);
   const chronos = openChronos().map(chronoToJson);
   const chronosDone = db.prepare(`
-    SELECT c.id, c.task_id, c.mode, c.active_ms, c.entry_id, c.stopped_at,
+    SELECT c.id, c.task_id, c.mode, c.active_ms, c.entry_id, c.stopped_at, c.date,
            COALESCE(t.title, '(tâche supprimée)') AS task_title
     FROM task_chronos c LEFT JOIN tasks t ON t.id = c.task_id
     WHERE c.stopped_at IS NOT NULL AND c.date = ?
     ORDER BY c.stopped_at DESC LIMIT 15`).all(effectiveToday)
-    .map(c => ({ ...c, minutes: c.active_ms / 60000 }));
+    .map(c => {
+      // 💰 : un minuteur stoppé a écrit un vrai pointage (argent exact) ;
+      // un chrono rattaché garde une attribution virtuelle via une entrée fictive
+      const rate = getSettings().hourly_rate;
+      let minutes = c.active_ms / 60000;
+      let money = (paidMoneyMinutes(pseudoEntry(c.date, c.stopped_at - c.active_ms), minutes) / 60) * rate;
+      if (c.entry_id) {
+        const en = db.prepare('SELECT * FROM entries WHERE id=?').get(c.entry_id);
+        if (en) { minutes = en.minutes; money = entryToJson(en).money; }
+      }
+      return { ...c, minutes, money };
+    });
   const reminders = db.prepare('SELECT * FROM reminders ORDER BY time').all()
     .map(r => ({ id: r.id, time: r.time, enabled: !!r.enabled }));
   res.json({
@@ -917,13 +966,14 @@ app.delete('/api/reminders/:id', (req, res) => {
 
 // --- Réglages ---------------------------------------------------------------
 app.put('/api/settings', (req, res) => {
-  const { hourly_rate, currency, daily_goal_minutes, active_day_minutes, weekly_goal_minutes, notify_enabled, notify_stop_minutes, daily_remind } = req.body || {};
+  const { hourly_rate, currency, daily_goal_minutes, active_day_minutes, weekly_goal_minutes, freedom_amount, notify_enabled, notify_stop_minutes, daily_remind } = req.body || {};
   db.prepare(`UPDATE settings SET
     hourly_rate = COALESCE(?, hourly_rate),
     currency = COALESCE(?, currency),
     daily_goal_minutes = COALESCE(?, daily_goal_minutes),
     active_day_minutes = COALESCE(?, active_day_minutes),
     weekly_goal_minutes = COALESCE(?, weekly_goal_minutes),
+    freedom_amount = COALESCE(?, freedom_amount),
     notify_enabled = COALESCE(?, notify_enabled),
     notify_stop_minutes = COALESCE(?, notify_stop_minutes),
     daily_remind = COALESCE(?, daily_remind),
@@ -934,6 +984,7 @@ app.put('/api/settings', (req, res) => {
     daily_goal_minutes !== undefined ? Number(daily_goal_minutes) : null,
     active_day_minutes !== undefined ? Number(active_day_minutes) : null,
     weekly_goal_minutes !== undefined ? Math.max(0, Number(weekly_goal_minutes) || 0) : null,
+    freedom_amount !== undefined ? Math.max(0, Number(freedom_amount) || 0) : null,
     notify_enabled !== undefined ? (notify_enabled ? 1 : 0) : null,
     notify_stop_minutes !== undefined ? Number(notify_stop_minutes) : null,
     typeof daily_remind === 'string' ? daily_remind : null,
@@ -1068,6 +1119,18 @@ async function checkReminders() {
         await notifyIfEnabled('🎯 Objectif de la semaine atteint !',
           `${fmtMinutesFr(doneWeek)} cette semaine — chaque minute de plus ne rapporte plus d’argent 💰 et file au 🏦 rattrapage`, 'week-goal');
         kvSet('week_goal_alert_' + wkFrom, '1');
+      }
+    }
+
+    // 2ter) 🕊️ Seuil de liberté financière franchi (une fois par valeur de seuil)
+    const fGoal = s.freedom_amount || 0;
+    if (fGoal > 0) {
+      const fm = totalMoneyLive(nowMs);
+      const key = 'freedom_alert_' + fGoal;
+      if (fm >= fGoal && !kvGet(key)) {
+        await notifyIfEnabled('🕊️ Liberté financière atteinte !',
+          `${fmtMoneyFr(fm, s.currency)} cumulés — ton seuil de ${fmtMoneyFr(fGoal, s.currency)} est franchi 🎉`, 'freedom');
+        kvSet(key, '1');
       }
     }
 

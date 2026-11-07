@@ -117,6 +117,12 @@ main { padding: 16px; }
 .stat-num.gold { background: linear-gradient(135deg, var(--gold), var(--fire)); }
 .field-hint { font-size: 11px; color: var(--muted); margin: 0 0 10px; }
 
+/* --- Seuil de liberté financière 🕊️ --- */
+#freedom-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--ok), var(--gold)); border-radius: 999px; transition: width .6s ease; }
+#freedom-block.reached .goal-line span:last-child { color: var(--gold); }
+#freedom-block.reached { border-top-color: var(--gold); }
+#freedom-block.reached #freedom-left { text-shadow: 0 0 10px rgba(251,191,36,.45); }
+
 /* ============ Timer ============ */
 .timer-zone { text-align: center; margin-bottom: 20px; }
 .timer-ring {
@@ -416,6 +422,12 @@ main { padding: 16px; }
 .chrono-row .c-time, .chrono-done-list .c-time {
   font-variant-numeric: tabular-nums; font-weight: 900; font-size: 15px;
   white-space: nowrap;
+}
+/* 💰 argent attribué au chrono (sous l'horloge) */
+.c-right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.c-money {
+  font-size: 11px; font-weight: 800; color: var(--ok);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .chrono-row.running .c-time { color: var(--primary2); }
 .chrono-row.paused { opacity: .6; }

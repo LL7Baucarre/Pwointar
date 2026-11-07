@@ -1,5 +1,5 @@
 /* Pwointar — service worker (cache app shell, network-first API) */
-const CACHE = 'pwointar-v7';
+const CACHE = 'pwointar-v8';
 
 const ASSETS = [
   './',
